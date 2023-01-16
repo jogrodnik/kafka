@@ -1,0 +1,11 @@
+#!/bin/bash
+
+# Git version (default 2.20.1)
+GIT_VERSION=${1:-2.20.1}
+# confd version (default 0.16.0)
+CONFD_VERSION=${2:-0.16.0}
+# sonar-scanner version (default 4.6.0.2311)
+SONAR_SCANNER_VERSION=${3:-4.6.0.2311}
+
+# Build docker image
+docker build --build-arg GIT_VERSION="${GIT_VERSION}" --build-arg CONFD_VERSION="${CONFD_VERSION}" --build-arg SONAR_SCANNER_VERSION="${SONAR_SCANNER_VERSION}" --tag nexussrv:9999/debian:base .
