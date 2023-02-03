@@ -1,0 +1,21 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  namespace: default
+  name: reportzen
+  labels:
+    app: reportzen
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    kubernetes.io/ingress.class: "nginx"
+spec:
+  ingressClassName: nginx
+  defaultBackend:
+    service:
+      name: reportzen
+      port:
+        number: 80
+  tls:
+    - hosts:
+        - 35.197.193.213.nip.io

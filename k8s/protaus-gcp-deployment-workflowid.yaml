@@ -1,0 +1,75 @@
+---
+apiVersion: "v1"
+kind: "ConfigMap"
+metadata:
+  name: "protaus-config-kiji"
+  namespace: "default"
+  labels:
+    app: "protaus"
+data:
+  SPRING_PROFILES_ACTIVE: "prod"
+---
+apiVersion: "apps/v1"
+kind: "Deployment"
+metadata:
+  name: "protaus"
+  namespace: "default"
+  labels:
+    app: "protaus"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: "protaus"
+  template:
+    metadata:
+      labels:
+        app: "protaus"
+    spec:
+      serviceAccountName: gke-service-account
+      containers:
+      - name: "protaus"
+        image: "eu.gcr.io/pol-reportzen-dev-005/protaus:latest"
+#        resources:
+#         limits:
+#           memory: 256Mi
+#           cpu: "0.5"
+#         requests:
+#           memory: 256Mi
+#           cpu: "0.2"
+        ports:
+          - containerPort: 8080
+        env:
+            - name: 'SPRING_PROFILES_ACTIVE'
+              value: 'prod'
+            - name: POSTGRESQL_DB_PROTAUS_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: gft-academy-protaus
+                  key: username
+            - name: POSTGRESQL_DB_PROTAUS_PASSWD
+              valueFrom:
+                secretKeyRef:
+                  name: gft-academy-protaus
+                  key: password
+            - name: POSTGRESQL_DB_PROTAUS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: gft-academy-protaus
+                  key: database
+            - name: "PORT"
+              value: "8080"
+      - name: cloud-sql-proxy
+        image: gcr.io/cloudsql-docker/gce-proxy:1.28.0
+        command:
+          - "/cloud_sql_proxy"
+          - "-log_debug_stdout"
+          - "-instances=pol-reportzen-dev-005:europe-west2:sql-reportzen=tcp:5432"
+          - "-dir=/cloudsql/pol-reportzen-dev-005:europe-west2:sql-reportzen"
+        securityContext:
+          runAsNonRoot: true
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "100m"
+            

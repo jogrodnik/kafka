@@ -1,0 +1,44 @@
+---
+apiVersion: "apps/v1"
+kind: "Deployment"
+metadata:
+  name: "reportzen"
+  namespace: "default"
+  labels:
+    app: "reportzen"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: "reportzen"
+  template:
+    metadata:
+      labels:
+        app: "reportzen"
+    spec:
+      serviceAccountName: gke-service-account
+      containers:
+        - name: "reportzen-sha256-1"
+          image: "eu.gcr.io/pol-reportzen-dev-005/reportzen@sha256:1d7a80a891d8b4eee6385108372d96553970eb3541a3b4904598a8de639d6bc8"
+          ports:
+            - containerPort: 80
+---
+apiVersion: "autoscaling/v2beta1"
+kind: "HorizontalPodAutoscaler"
+metadata:
+  name: "reportzen-hpa-n4ns"
+  namespace: "default"
+  labels:
+    app: "reportzen"
+spec:
+  scaleTargetRef:
+    kind: "Deployment"
+    name: "reportzen"
+    apiVersion: "apps/v1"
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+    - type: "Resource"
+      resource:
+        name: "cpu"
+        targetAverageUtilization: 80

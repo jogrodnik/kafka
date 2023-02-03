@@ -1,0 +1,74 @@
+---
+apiVersion: "v1"
+kind: "ConfigMap"
+metadata:
+  name: "microgiants-config-kiji"
+  namespace: "default"
+  labels:
+    app: "microgiants"
+data:
+  SPRING_PROFILES_ACTIVE: "prod"
+---
+apiVersion: "apps/v1"
+kind: "Deployment"
+metadata:
+  name: "microgiants"
+  namespace: "default"
+  labels:
+    app: "microgiants"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: "microgiants"
+  template:
+    metadata:
+      labels:
+        app: "microgiants"
+    spec:
+      serviceAccountName: gke-service-account
+      containers:
+      - name: "microgiants"
+        image: "eu.gcr.io/pol-reportzen-dev-005/microgiants:latest"
+        resources:
+          limits:
+#            memory: "512Mi"
+#            cpu: "256m"
+          requests:
+#            memory: "512Mi"
+#            cpu: "256m"
+        ports:
+          - containerPort: 8080
+        env:
+            - name: 'SPRING_PROFILES_ACTIVE'
+              value: 'prod'
+            - name: POSTGRESQL_DB_MICROGIANTS_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: gft-academy-microgiants
+                  key: username
+            - name: POSTGRESQL_DB_MICROGIANTS_PASSWD
+              valueFrom:
+                secretKeyRef:
+                  name: gft-academy-microgiants
+                  key: password
+            - name: POSTGRESQL_DB_MICROGIANTS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: gft-academy-microgiants
+                  key: database
+            - name: "PORT"
+              value: "8080"
+      - name: cloud-sql-proxy
+        image: gcr.io/cloudsql-docker/gce-proxy:1.28.0
+        command:
+          - "/cloud_sql_proxy"
+          - "-log_debug_stdout"
+          - "-instances=pol-reportzen-dev-005:europe-west2:sql-reportzen=tcp:5432"
+          - "-dir=/cloudsql/pol-reportzen-dev-005:europe-west2:sql-reportzen"
+        securityContext:
+          runAsNonRoot: true
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "100m"
