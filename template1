@@ -44,13 +44,6 @@ for i in broker control-center metrics schema-registry kafka-tools rest-proxy; d
 	echo $PASSWORD >${i}_truststore_creds
 done
 
-In the process of developing the kafka cluster upgrade procedure, we distinguish the following tasks:
-
-1. Gathering knowledge about the procedure of upgrading individual cluster elements. As the end product of this task, we want to detail how to update the zookeeper, broker, and registry cluster, Kafka. An important assumption is to maintain the consistency of the processed data. At this stage, we should decide in which model we will perform the update of the Kafka Cluster.
-
-2. Verify the procedure by upgrading from version 6.2.1 to version 7.3.1 (building the Docker 7.3.1 image and verifying the developed method in point 1, scripts supporting the upgrade). As the end product of this task, we should have a detailed design to automate the Kafka cluster update process
-
-3. Testing the update process on a few selected projects. The final product should be a cluster Kafka Unity .20 upgrade procedure ready for implementation.
-
+We aim to develop a ready-to-implement procedure for upgrading the Kafka Confluent cluster to GKE for the Unity 2.0 system. Compliant with business and technical requirements. We will determine the method of cluster upgrade during the work.
 
 echo "✅  All done."
