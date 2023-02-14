@@ -44,4 +44,18 @@ for i in broker control-center metrics schema-registry kafka-tools rest-proxy; d
 	echo $PASSWORD >${i}_truststore_creds
 done
 
+
+The Unity 2.0 system uses  Kafka Confluent topics in the process of asynchronous message processing. The cluster of brokers providing these topics is installed in an on-prem environment.
+
+The diagram below ( read lines ) shows the internal current flow of information in the Unity 2.0 pipeline.
+
+The current architecture significantly impacts the load of the Kafka topics on-prem and network traffic between on-prem and GCP GKE during the processing of the pipeline messages.
+ 
+To eliminate these inefficiencies of the Unity 2 Pipelines, we want to implement a dedicated Kafka on-prem on the GKE cluster for each project (Kubernetes namespace) so the traffic is consistent with the diagram ( green line )
+
+Consequently, all internal traffic will be based on the Kafka cluster topic dedicated to each project.
+
+At the moment, we have a Kafka cluster installed on GKE.
+The goal of this epic is to do all tasks necessary to run a full production deployment of Kafka on GKE in accordance with the requirements of the HSBC procedure 
+
 echo "✅  All done."
