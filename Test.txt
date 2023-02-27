@@ -1,0 +1,2 @@
+The current implementation of Unity 2.0 uses the Kafka system installed in IKP for internal communication between pipeline elements. However, the idea behind the project is to optimize performance but still have a large Kafka cluster for both inbound and outbound traffic to Unity 2.0. Therefore, we decided that communication between the Unity components of
+the pipeline should be based on a dedicated cluster for each Project Kafka installed on GKE.
