@@ -1,0 +1,62 @@
+Using a conditional to create a resource only if a value is set:
+yaml
+Copy code
+{{- if .Values.someValue }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secret
+type: Opaque
+data:
+  someKey: {{ .Values.someValue | b64enc }}
+{{- end }}
+This example creates a Kubernetes secret only if the someValue variable is set in the values.yaml file. The if conditional is used to check for the existence of the value, and the b64enc function is used to base64-encode the value before adding it to the secret.
+
+Using a loop to create multiple resources:
+yaml
+Copy code
+{{- range $key, $val := .Values.ingresses }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $key }}
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+  {{- range $host, $path := $val }}
+  - host: {{ $host }}
+    http:
+      paths:
+      - path: {{ $path }}
+        pathType: Prefix
+        backend:
+          service:
+            name: {{ $key }}
+            port:
+              name: http
+  {{- end }}
+{{- end }}
+This example creates one or more Kubernetes ingresses using values from the ingresses section in the values.yaml file. The range function is used to iterate over each ingress and its associated hosts and paths, and the resulting manifest file includes a separate ingress resource for each combination of host and path.
+
+Using a custom function to generate a value:
+yaml
+Copy code
+{{- define "generateName" -}}
+{{ printf "%s-%s" .Release.Name .Chart.Name | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ template "generateName" . }}
+spec:
+  selector:
+    app: {{ .Release.Name }}
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+This example uses a custom function, generateName, to generate a unique name for the service based on the release and chart names. The define function is used to define the function, and the template function is used to call the function in the metadata.name field of the service manifest. The trunc and trimSuffix functions are used to ensure that the resulting name is no longer than 63 characters and does not end with a hyphen.
+
+These are just a few more examples of the powerful features of Go templates in Helm. By combining conditionals, loops, and custom functions with built-in functions like printf, trunc, and trimSuffix, you can create highly dynamic and reusable Kubernetes manifest files.
