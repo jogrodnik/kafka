@@ -1,0 +1,62 @@
+{{ if and .Release.IsInstall .Values.job.sqlBootStrap }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ template "stolon.fullname" . }}-sqlstrap-cluster
+  labels:
+    app: {{ template "stolon.name" . }}
+    chart: {{ template "stolon.chart" . }}
+    release: {{ .Release.Name }}
+    heritage: {{ .Release.Service }}
+  annotations:
+    "helm.sh/hook-delete-policy": hook-succeeded
+spec:
+  template:
+    metadata:
+      labels:
+        app: {{ template "stolon.fullname" . }}
+        release: {{ .Release.Name }}
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ template "stolon.serviceAccountName" . }}
+      initContainers:
+        - name: {{ .Chart.Name }}-sqlstrap
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - "/bin/bash"
+            - "-ec"
+            - |
+            - while [ $(pg_isready -h $PHOST) -ne 0]; do
+                sleep 5;
+              done
+      containers:
+        - name: {{ template "stolon.fullname" . }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - "/bin/bash"
+            - "-ec"
+            - |
+              export PGPASSWORD="$(cat $STKEEPER_PG_SU_PASSWORDFILE)"
+              psql=( psql -v ON_ERROR_STOP=1 -d postgres --no-password )
+              echo "$0: running $BOOTSTRAP_SQL"; "${psql[@]}" -f "$BOOTSTRAP_SQL"; echo
+          env:
+            - name: STKEEPER_PG_SU_USERNAME
+              value: {{ .Values.superuserUsername | quote}}
+            - name: STKEEPER_PG_SU_PASSWORDFILE
+              value: "/etc/secrets/stolon/pg_su_password"
+            - name: BOOTSTRAP_SQL
+              value: "/etc/secrets/stolon/bootstrap.sql"
+            - name: PGHOST
+              value: {{ template "stolon.fullname" . }}-proxy
+            - name: PGUSER
+              value: {{ .Values.superuserUsername | quote}}
+          volumeMounts:
+          - name: stolon-secrets
+            mountPath: /etc/secrets/stolon
+      volumes:
+        - name: stolon-secrets
+          secret:
+            secretName: {{ template "stolon.fullname" . }}
+{{ end }}
