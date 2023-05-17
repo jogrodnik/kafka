@@ -73,3 +73,37 @@ You have successfully installed Kafka on Kubernetes. You can now use Kafka to bu
 For more information and advanced configurations, please refer to the Kafka documentation.
 
 Feel free to reach out if you have any questions or encounter any issues during the installation process.
+
+
+
+#!/bin/bash
+
+# Kafka connection details
+bootstrap_servers="your_kafka_bootstrap_servers"
+topic="your_topic_name"
+
+# Test configuration
+num_messages=10000
+message_size_bytes=1000
+
+# Create test messages
+test_message="test_message$(seq -s ' ' -f '%.0f' 1 $((message_size_bytes/12)))"
+test_messages=$(yes "$test_message" | head -n $num_messages)
+
+# Produce test messages to Kafka
+echo "$test_messages" | kafka-console-producer.sh \
+  --bootstrap-server "$bootstrap_servers" \
+  --topic "$topic" \
+  --compression-codec snappy \
+  --batch-size 1000 \
+  --request-timeout-ms 30000
+
+# Consume test messages from Kafka
+kafka-console-consumer.sh \
+  --bootstrap-server "$bootstrap_servers" \
+  --topic "$topic" \
+  --from-beginning \
+  --timeout-ms 30000 \
+  --max-messages "$num_messages"
+
+
