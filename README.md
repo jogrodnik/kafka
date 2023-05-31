@@ -107,3 +107,8 @@ kafka-console-consumer.sh \
   --max-messages "$num_messages"
 
 
+The project code has been stored in two Git repositories:
+    1. unitycore-docker-confluent
+    2. unitycore-gke-confluent
+The unitycore-docker-confluent repository contains the implementation of Docker images that create an environment to build a Confluent Kafka system. This environment includes essential components such as a ZooKeeper cluster, brokers, and a schema registry. It enables the easy deployment of a fully functional Confluent Kafka system on a GKE cluster.
+In the unitycore-gke-confluent repository, you'll find the implementation of Helm charts that automate the installation process specifically designed for the Unity project's Kafka cluster. This cluster is integrated with a comprehensive monitoring system based on the Prometheus/Grafana stack. The cluster is also secured using SSL protocols. Optionally, there are configurable parameters that allow access to the cluster through ingress controllers, making it more flexible and customizable for different deployment scenarios.
