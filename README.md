@@ -106,6 +106,9 @@ kafka-console-consumer.sh \
   --timeout-ms 30000 \
   --max-messages "$num_messages"
 
+
+The diagram below illustrates the current processing flow within the Unity 2 system. Each Kafka queue is created in the on-prem Kafka broker, and at each processing step, the message is transmitted between the GKE cluster and the on-prem Kafka environment.
+
 The primary objective of the project was to establish dedicated clusters for each Unity project. By deploying a fully functional Kafka cluster within the Google Kubernetes Engine (GKE) environment, specifically tailored to each project, we could effectively optimize the internal communication among the services constituting the Unity 2 pipeline system.
 
 During the project implementation, our aim was to preserve an on-premises cluster to ensure the consistent availability of data for both Unity 1 and Unity 2 systems. Additionally, this approach catered to projects where data processing within the Google Cloud Platform (GCP) environment was not feasible or compliant with specific requirements.
