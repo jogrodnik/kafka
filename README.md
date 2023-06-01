@@ -1,4 +1,6 @@
 
+https://jadaptive.com/java-ssh-and-the-new-openssh-private-key-format/
+
 Once Kafka is installed in the GKE environment of the project, only the initial read operation will involve communication between the GKE cluster and the on-premises Kafka. Subsequent steps in the pipeline will rely on internal topics within the dedicated Kafka broker of the project. This means that after the initial read, the data processing and flow within the pipeline will be handled internally by the project's Kafka infrastructure. The diagram below illustrates this change in operation.
 
 We have structured the project implementation into four distinct stages:
