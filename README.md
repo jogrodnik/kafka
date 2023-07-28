@@ -273,3 +273,8 @@ kafka-avro-console-consumer --bootstrap-server localhost:9092 \
                             --topic your_topic_name \
                             --from-beginning
 
+kafka-topics.sh --describe --topic your_topic_name --bootstrap-server localhost:9092
+Schema ID: 123
+
+curl -X GET http://localhost:8081/schemas/ids/<schema_id>
+
