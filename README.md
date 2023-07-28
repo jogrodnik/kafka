@@ -256,3 +256,20 @@ kafka-console-consumer.sh \
 
 The Kubernetes API server may log authentication and authorization events for auditing purposes, providing administrators with an audit trail to track access to the Kubernetes cluster.
 Remember, the specific configurations and claim names may differ slightly based on the version of Keycloak and the customizations made in the OIDC setup. Always consult the official Keycloak documentation and the Kubernetes documentation for the most up-to-date and accurate integration instructions.
+
+
+# Sample Avro payload for a 'user' topic
+avro_payload='{"name": "John", "age": 30}'
+
+# Produce Avro messages to the 'your_topic_name' topic
+echo "$avro_payload" | kafka-avro-console-producer \
+                      --broker-list localhost:9092 \
+                      --topic your_topic_name \
+                      --property value.schema='{"type":"record","name":"myrecord","fields":[{"name":"name","type":"string"},{"name":"age","type":"int"}]}'
+
+
+
+kafka-avro-console-consumer --bootstrap-server localhost:9092 \
+                            --topic your_topic_name \
+                            --from-beginning
+
