@@ -1,0 +1,21 @@
+apiVersion: v2
+name: prometheus
+appVersion: v2.46.0
+version: 23.3.0
+kubeVersion: ">=1.16.0-0"
+description: Prometheus is a monitoring system and time series database.
+type: application
+dependencies:
+ - name: kube-state-metrics
+   version: "5.10.*"
+   repository: file://../kube-state-metrics
+   condition: kube-state-metrics.enabled
+ - name: prometheus-node-exporter
+   version: "4.22.*"
+   repository: file://../prometheus-node-exporter
+   condition: prometheus-node-exporter.enabled
+keywords:
+  - monitoring
+  - prometheus
+
+  
