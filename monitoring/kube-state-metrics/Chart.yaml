@@ -1,0 +1,11 @@
+apiVersion: v2
+name: kube-state-metrics
+description: Install kube-state-metrics to generate and expose cluster-level metrics
+keywords:
+- metric
+- monitoring
+- prometheus
+- kubernetes
+type: application
+version: 5.10.1
+appVersion: 2.9.2
