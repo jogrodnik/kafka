@@ -1,0 +1,36 @@
+Cluster Metrics
+
+Cluster level overview of workloads deployed
+
+Cluster CPU usage: used vs. total
+Cluster memory usage: used vs. total (you can configure this in the memory-defaults.yaml file under the default-mem-example namespace)
+Cluster file system usage: used vs. total
+Cluster network I/O pressure
+Cluster health (pod status, pod restarts, pod throttling)
+Overview of nodes, pods, and containers
+
+Node Metrics
+
+Health check for master nodes—API server, scheduler, controller, etc.
+Degradation of master nodes
+Number of nodes available for serving pods
+Node CPU utilization
+Node memory usage
+Node disk space available for placing pods
+Node disk I/O usage
+Node network traffic (in and out)—receive and transmit 
+Node network traffic errors
+Node network traffic drop 
+
+
+Pod/Container Metrics
+
+
+Resource allocation for pods
+Pods which are either underprovisioned or overprovisioned
+Number of running pods in the cluster
+Healthy vs. unhealthy pods in the cluster
+Percentage of throttled containers
+Number of container restarts that have occurred
+Number of persistent volumes in a failed or pending state
+Container CPU and memory utilization (you can configure this in the memory-defaults-pod.yaml file for each pod or container)
