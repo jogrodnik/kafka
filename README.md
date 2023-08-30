@@ -278,3 +278,28 @@ Schema ID: 123
 
 curl -X GET http://localhost:8081/schemas/ids/<schema_id>
 
+
+
+
+
+
+Kafka MirrorMaker 2 (MM2):
+- Kafka MirrorMaker 2 is a built-in tool within the Apache Kafka ecosystem.
+- It is designed for replicating data between two separate Kafka clusters.
+- MM2 is an enhanced version of the original MirrorMaker tool, offering advanced features and improved performance.
+- Key features include multi-cluster replication, configurability, fault tolerance, and high throughput.
+
+Kafka Connect:
+- Kafka Connect is a framework and toolset for building connectors between Kafka and other data systems.
+- Connectors enable seamless integration of data between Kafka and various external sources or sinks.
+- Connectors can be source connectors (bringing data into Kafka) or sink connectors (sending data out of Kafka).
+- The framework is designed for scalability, fault tolerance, and ease of use through configuration.
+- Kafka Connect offers a REST API for managing connectors and monitoring their tasks.
+
+Relation between Kafka MirrorMaker 2 and Kafka Connect:
+- Kafka MirrorMaker 2 serves as a specialized use case of Kafka Connect.
+- It focuses on replicating data between Kafka clusters exclusively.
+- While Kafka Connect supports a wide range of connectors for diverse systems, MirrorMaker 2 is optimized for Kafka-to-Kafka replication.
+- Essentially, MirrorMaker 2 is a dedicated connector tailored for high-throughput data replication between Kafka clusters.
+
+
