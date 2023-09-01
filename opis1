@@ -36,3 +36,9 @@ Leveraged established performance testing tools and methodologies to scrutinize 
 Monitored source and target clusters closely throughout testing, promptly detecting and addressing any discrepancies or latency fluctuations.
 Leveraged insights derived from performance testing to fine-tune and optimize Mirror Maker 2.0 configurations for enhanced mirroring efficiency.
 Feel free to use these rephrased points in your report. Adapt the language as needed to fit your context and writing style.
+
+
+The implementation of the Kafka image on GKE consists of two independent parts. The base image creates the appropriate directory structure adapted to the Unity 
+standard and required for the correct execution of individual Kafka cluster components.
+The detailed configuration of individual layers of the Docker image is described in the clonfluent.docker file.
+
