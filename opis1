@@ -11,4 +11,58 @@ The MM2 image introduces an additional feature to the base image – a class tha
 in the mm2-prefixes-policy.zip file. A comprehensive description of each layer can be found in the confluent.mm2.docker file. 
 
 
+Kafka Monitoring  
+
+https://github.com/confluentinc/jmx-monitoring-stacks/tree/6.2.0-post  - Confluence JMX Monitoring Stacks
+
+
+MirrorMaker 2.0
+
+Links:
+
+https://cwiki.apache.org/confluence/display/KAFKA/KIP-382%3A+MirrorMaker+2.0  - KIP-382: MirrorMaker 2.0
+
+MirrorMaker 2.0 Rules
+
+RULE 0: Each mirror flow runs in a Kafka Connect cluster
+RULE 1: Each mirror flow is unidirectional
+RULE 2: Each mirror flow copies one or more topics
+RULE 3: Each source topic is replicated to exactly one remote topic (one-to-one topic mapping)
+RULE 4: MM2 supports automatic remote topic creation
+RULE 5: MM2 supports automatic remote topic renaming
+RULE 6: Multiple flows can be created for complex topologies and bidirectional flows
+RULE 7: To prevent cycles, MM2 does not replicate source topics containing the name of the target cluster
+RULE 8: Source and target clusters cannot be the same
+RULE 9: One Kafka Connect cluster is needed per target cluster
+RULE 10: No Kafka Connect clusters are needed for Kafka source clusters
+RULE 11: Two Kafka Connect clusters are required for bidirectional flows
+RULE 12: To prevent duplicate events, don’t have overlapping topic subscriptions
+RULE 13: Use topic renaming with the default source cluster alias to prevent cycles
+RULE 14: Use a short source cluster alias to prevent long topic names.
+
+Source:
+
+https://www.instaclustr.com/blog/kafka-mirrormaker-2-theory/  - Apache Kafka MirrorMaker 2 (MM2) Part 1: Theory
+https://www.instaclustr.com/blog/apache-kafka-mirrormaker-2-practice/ - Apache Kafka MirrorMaker 2 (MM2) Part 2: Practice
+
+
+https://ibm-cloud-architecture.github.io/refarch-eda/use-cases/kafka-mm2/ - Mirror maker 2 labs
+
+
+MirrorMaker 2.0 - Performance tuning
+
+Source 
+
+https://wmclane.medium.com/how-to-optimize-mirrormaker2-for-high-performance-apache-kafka-replication-697bc5089c64
+
+Mirror Maker 2 - Event Streams Service to Local Kafka - Lab 1 - Similar to Unity 2.0 usecase
+
+https://ibm-cloud-architecture.github.io/refarch-eda/use-cases/kafka-mm2/lab-1/
+
+Kafka 
+
+Links:
+https://www.confluent.io/blog/kafka-listeners-explained/  - Kafka Listeners – Explained 
+
+
 
