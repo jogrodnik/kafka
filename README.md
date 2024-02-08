@@ -1,3 +1,42 @@
+
+The javax.net.debug system property in Java is a powerful tool for debugging SSL/TLS and other network-related activities. By setting this property, you can get detailed information about the SSL/TLS protocol operations, which is invaluable for troubleshooting. Below are more parameters you can specify with javax.net.debug to control the scope and amount of debug information printed.
+
+General Debugging Options
+all: Enables all debugging.
+ssl: Enables all SSL debugging.
+SSL/TLS Debugging Options
+Within SSL/TLS debugging, you can further refine what you want to debug by specifying a comma-separated list of the following options:
+
+record: Enables logging of SSL/TLS records, which are the basic units of data exchanged in an SSL/TLS connection.
+handshake: Prints each handshake message, providing insight into the negotiation between client and server.
+keygen: Shows key generation data.
+session: Logs session activity, useful for understanding session reuse.
+defaultctx: Displays default SSL context information.
+sslctx: Shows SSL context tracing.
+sessioncache: Debugs SSL session cache access.
+keymanager: Logs key manager activity, including selection decisions for the encryption keys.
+trustmanager: Debugs trust manager activities, such as certificate validation.
+pluggability: Debugs pluggability (e.g., JSSE provider selection and loading).
+Examples
+Debug Handshake and Key Generation:
+
+bash
+Copy code
+-Djavax.net.debug=handshake,keygen
+This configuration is useful for understanding the details of the key exchange process during the handshake.
+
+Debug Session Management and Trust Manager Decisions:
+
+bash
+Copy code
+-Djavax.net.debug=session,trustmanager
+This helps in diagnosing issues related to session reuse and certificate validation.
+
+
+
+
+
+
 Enable Detailed SSL/TLS Debugging
 Java's SSL/TLS implementation includes a detailed debugging mechanism that can be enabled by setting the javax.net.debug system property. You can enable this debugging in several ways:
 
