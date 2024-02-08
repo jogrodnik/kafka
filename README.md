@@ -1,6 +1,32 @@
+Enable Detailed SSL/TLS Debugging
+Java's SSL/TLS implementation includes a detailed debugging mechanism that can be enabled by setting the javax.net.debug system property. You can enable this debugging in several ways:
 
+Via Command Line: Add the following option when starting your Java application:
+
+bash
+Copy code
+-Djavax.net.debug=ssl,handshake
+This enables detailed debugging of SSL handshakes. For even more detailed output, you can use all instead of ssl,handshake, but be aware that this will produce a very large amount of output.
+
+In Code: You can also set this property programmatically at the very beginning of your main method or before any SSL activities occur:
+
+java
+
+Copy code
+System.setProperty("javax.net.debug", "ssl,handshake");
+Understanding the Debug Output
+The debug output will include a lot of information. Here are some key things to look for:
+
+Handshake Messages: Look for the handshake messages exchanged between the client and server. This includes ClientHello, ServerHello, Certificate, ServerKeyExchange, CertificateRequest, ServerHelloDone, CertificateVerify, ClientKeyExchange, Finished, etc.
+Alerts: Pay attention to any SSL/TLS alerts that are sent, which can indicate errors. For example, Received fatal alert: bad_certificate points towards a certificate issue.
+Cipher Suites: Check the cipher suites offered by the client and the ones accepted by the server. Ensure that there is at least one cipher suite in common and it is supported and enabled on both sides.
+Certificates: Verify that the certificates are correctly exchanged and validate properly. Look for any messages about certificate validation failing.
 
 https://jadaptive.com/java-ssh-and-the-new-openssh-private-key-format/
+
+
+
+
 
 Once Kafka is installed in the GKE environment of the project, only the initial read operation will involve communication between the GKE cluster and the on-premises Kafka. Subsequent steps in the pipeline will rely on internal topics within the dedicated Kafka broker of the project. This means that after the initial read, the data processing and flow within the pipeline will be handled internally by the project's Kafka infrastructure. The diagram below illustrates this change in operation.
 
