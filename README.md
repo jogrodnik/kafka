@@ -1,3 +1,14 @@
+Steps for Comprehensive Review GKE cluster:
+
+1. Node Pools: Ensure node pools are configured with appropriate machine types and autoscaling.
+2. Resource Management: Check CPU and memory requests/limits, and ensure namespaces have appropriate quotas.
+3. Autoscaling: Verify cluster autoscaler settings.
+4. Monitoring and Logging: Set up Stackdriver for monitoring and logging.
+5. Network and Security: Verify network policies and security configurations.
+6. Cost Analysis: Review and optimize costs using GCP's cost management tools.
+
+
+
 
 The javax.net.debug system property in Java is a powerful tool for debugging SSL/TLS and other network-related activities. By setting this property, you can get detailed information about the SSL/TLS protocol operations, which is invaluable for troubleshooting. Below are more parameters you can specify with javax.net.debug to control the scope and amount of debug information printed.
 
