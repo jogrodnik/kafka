@@ -25,6 +25,7 @@ gcloud compute backend-services create gke-control-plane-backend-service \
   --protocol TCP \
   --load-balancing-scheme INTERNAL \
   --region us-central1
+  
 Step 5: Create a Forwarding Rule for PSC in Network A, Region A
 gcloud compute forwarding-rules create psc-forwarding-rule \
   --region us-central1 \
@@ -34,11 +35,13 @@ gcloud compute forwarding-rules create psc-forwarding-rule \
   --ip-protocol TCP \
   --ports 443 \
   --address psc-internal-ip
+  
 Step 6: Create a Service Attachment in Network A, Region A
 This step creates a service attachment that allows VMs from other networks to connect to the PSC endpoint.
 
-gcloud compute instances create my-vm \
-  --zone us-east1-b \
-  --machine-type n1-standard-1 \
-  --subnetwork subnet-b \
-  --network network-b
+gcloud compute service-attachments create psc-service-attachment \
+  --region us-central1 \
+  --producer-forwarding-rule psc-forwarding-rule \
+  --connection-preference ACCEPT_AUTOMATIC
+
+
