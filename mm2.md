@@ -1,13 +1,12 @@
-5.4. Reliability guarantees
-Idempotence is useful for exactly once writes to a single partition. Transactions, when used with idempotence, allow exactly once writes across multiple partitions.
 
-Transactions guarantee that messages using the same transactional ID are produced once, and either all are successfully written to the respective logs or none of them are.
 
-# ...
-enable.idempotence=true
-max.in.flight.requests.per.connection=5
-acks=all
-retries=2147483647
-transactional.id=UNIQUE-ID 
-transaction.timeout.ms=900000 
-# ...
+# Source cluster configuration
+src.consumer.isolation.level: read_committed
+src.consumer.transactional.id: "mirror-maker-source-1-transaction"
+
+
+# Target cluster configuration
+dst.producer.acks: all
+dst.producer.retries: 5
+dst.producer.transactional.id: "mirror-maker-target-1-transaction"
+dst.producer.transaction.timeout.ms: 60000
