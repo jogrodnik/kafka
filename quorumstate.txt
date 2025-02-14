@@ -1,0 +1,61 @@
+Steps to Remove quorum-state and Define a New Quorum
+
+
+Stop All Controllers
+
+Ensure all KRaft controllers are stopped before making changes.
+This prevents split-brain scenarios.
+
+Remove quorum-state File
+
+The quorum-state file is stored in the metadata log directory (metadata.log.dir).
+(/confluent/[controller\broker]/data/
+
+Example command:
+
+rm -rf /path/to/metadata/quorum-state
+
+This removes the current quorum leader and voter state.
+
+Define a New Quorum in server.properties ( controller.properties)
+
+Update controller.quorum.voters in server.properties for all controllers:
+
+controller.quorum.voters=1@node1:9093,2@node2:9093,3@node3:9093
+
+Ensure that the node.id of each controller matches.
+
+Restart Controllers Sequentially
+
+Start each controller one at a time to allow them to form a quorum:
+
+kafka-server-start.sh /path/to/server.properties
+
+The first controller to start will attempt to become the leader.
+
+Verify Quorum Formation
+
+Use kafka-metadata-shell.sh to confirm that the new quorum has formed:
+
+kafka-metadata-shell.sh --snapshot /path/to/metadata-log --metadata-quorum
+
+Look for correct voter entries.
+
+What Happens When You Remove quorum-state?
+
+The quorum-state file stores the current leader and voters. Removing it forces a new election 
+and resets the quorum membership. Controllers will elect a new leader based on controller.quorum.voters 
+in the configuration.
+
+Risks and Considerations
+
+Metadata Corruption: If the metadata log (__cluster_metadata) is inconsistent, controllers might fail to start.
+Cluster Downtime: The cluster will be temporarily unavailable until the new quorum is established.
+Unrecognized Controllers: If the new controller.quorum.voters doesn’t match actual nodes, controllers may not reach a quorum.
+
+Safer Alternative
+If you want to update the quorum without risk, consider:
+
+Using kafka-metadata-shell.sh to modify quorum members instead of deleting quorum-state.
+
+Manually setting the leader with kafka-metadata-quorum commands.
