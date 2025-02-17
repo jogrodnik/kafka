@@ -12,6 +12,13 @@ set +xoe pipefail
 # Create a text file (kafka-topics.txt) with the list of Kafka topics to reassign
 # chmod +x ./kafka-reassign.sh
 # ./kafka-reassign.sh
+
+{
+    "topics": [
+      {"topic": "<TOPIC>"}
+    ],
+    "version":1
+  }
 #########################################################################################
 
 output_dir="./output"
