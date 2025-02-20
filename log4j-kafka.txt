@@ -1,0 +1,42 @@
+# Root logger (Keep at INFO to avoid excessive noise)
+log4j.rootLogger=INFO, stdout, kafkaAppender
+
+# Console Output
+log4j.appender.stdout=org.apache.log4j.ConsoleAppender
+log4j.appender.stdout.layout=org.apache.log4j.PatternLayout
+log4j.appender.stdout.layout.ConversionPattern=%d [%t] %-5p %c - %m%n
+
+# Kafka Log File Output
+log4j.appender.kafkaAppender=org.apache.log4j.FileAppender
+log4j.appender.kafkaAppender.File=/var/log/kafka/kafka-topic-debug.log
+log4j.appender.kafkaAppender.layout=org.apache.log4j.PatternLayout
+log4j.appender.kafkaAppender.layout.ConversionPattern=%d [%t] %-5p %c - %m%n
+
+# 🛠️ Enable DEBUG ONLY for topic creation-related components
+log4j.logger.kafka.controller.TopicControlManager=DEBUG
+log4j.logger.kafka.controller.PartitionControlManager=DEBUG
+log4j.logger.kafka.controller.QuorumController=DEBUG
+log4j.logger.kafka.controller.ReplicaControlManager=DEBUG
+log4j.logger.kafka.server.MetadataCache=DEBUG
+log4j.logger.kafka.server.ReplicaManager=DEBUG
+log4j.logger.kafka.metadata=DEBUG
+log4j.logger.kafka.metadata.loader=DEBUG
+log4j.logger.kafka.raft.KafkaRaftClient=DEBUG
+log4j.logger.kafka.network.RequestChannel=DEBUG
+log4j.logger.kafka.network.Processor=DEBUG
+log4j.logger.kafka.cluster.Partition=DEBUG
+log4j.logger.kafka.cluster.Replica=DEBUG
+
+# ⚠️ Keep other Kafka components at INFO or WARN to avoid log flooding
+log4j.logger.kafka.server.KafkaApis=INFO
+log4j.logger.kafka.log.LogManager=INFO
+log4j.logger.kafka.transaction.TransactionCoordinator=INFO
+log4j.logger.kafka.coordinator.group.GroupCoordinator=INFO
+log4j.logger.kafka.security=INFO
+log4j.logger.kafka.state=INFO
+log4j.logger.kafka.quotas=INFO
+log4j.logger.kafka.authorizer=INFO
+
+# 🔥 Reduce noise from general logs while keeping necessary details
+log4j.logger.kafka.request.logger=WARN
+log4j.logger.org.apache.kafka.clients.consumer.internals.Fetcher=WARN
