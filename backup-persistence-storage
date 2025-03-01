@@ -1,0 +1,168 @@
+Create snaphot for namespace
+
+
+#!/bin/bash
+NAMESPACE="your-namespace"
+ZONE="us-central1-a"
+
+for PVC in $(kubectl get pvc -n $NAMESPACE -o jsonpath='{.items[*].metadata.name}'); do
+    PV=$(kubectl get pvc $PVC -n $NAMESPACE -o jsonpath='{.spec.volumeName}')
+    DISK=$(kubectl get pv $PV -o jsonpath='{.spec.csi.volumeHandle}' | cut -d'/' -f5)
+    SNAPSHOT_NAME="${PVC}-backup-$(date +%Y%m%d-%H%M%S)"
+    echo "Creating snapshot for $DISK as $SNAPSHOT_NAME"
+    gcloud compute disks snapshot $DISK \
+        --snapshot-names=$SNAPSHOT_NAME \
+        --zone=$ZONE
+done
+
+
+Procedure
+
+1.  Find PVCs attached to Broker nad Controller StatefulSet
+    kubectl get pvc -n <namespace>
+    
+2.  Find the underlying Persistent Disks
+
+    kubectl get pv -o jsonpath='{range .items[*]}{.metadata.name} {.spec.csi.volumeHandle}{"\n"}{end}' -n <namespace>
+
+3. Snapshot each Persistent Disk
+   For each disk (one per Kafka broker and controller  PVC):
+
+   gcloud compute disks snapshot gke-cluster-pvc-1234abcd-5678-efgh-ijkl-1234567890ab \
+    --snapshot-names=kafka-0-backup-$(date +%Y%m%d-%H%M%S) \
+    --zone=us-central1-a
+
+   Repeat this for each broker’s PVC disk (kafka-0, kafka-1, etc.).
+
+Kubernetes does not directly restore PVC from snapshots.
+
+Deleting PVCs in a StatefulSet
+
+StatefulSets will automatically recreate PVCs when scaled up if they are missing.
+The new PVC will use the same name (e.g., datadir-kafka-0), which is critical for matching to a pre-bound PV.
+
+What Happens to the Snapshot?
+
+Important: Snapshots are independent of the PV and PVC.
+When you create a snapshot of a Persistent Disk, the snapshot exists in GCP independent of Kubernetes.
+You can safely delete the PV and PVC — the snapshot is not affected.
+
+
+#!/bin/bash
+
+NAMESPACE="kafka"
+STORAGE_CLASS="standard-rwo"
+ZONE="us-central1-a"
+PROJECT_ID=$(gcloud config get-value project)
+
+STATEFULSETS=("ctrl" "kafka")
+OTHER_PVCS=("datadir-schema-registry")
+SNAPSHOT_LOG="/tmp/snapshots.csv"
+
+get_disk_name() {
+    local pvc=$1
+    pv=$(kubectl get pvc "$pvc" -n "$NAMESPACE" -o jsonpath='{.spec.volumeName}')
+    kubectl get pv "$pv" -o jsonpath='{.spec.csi.volumeHandle}' | cut -d'/' -f5
+}
+
+backup_pvc() {
+    local pvc=$1
+    disk_name=$(get_disk_name "$pvc")
+    snapshot_name="${pvc}-backup-$(date +%Y%m%d-%H%M%S)"
+    gcloud compute disks snapshot "$disk_name" --snapshot-names="$snapshot_name" --zone="$ZONE"
+    echo "$pvc,$disk_name,$snapshot_name" >> "$SNAPSHOT_LOG"
+}
+
+restore_pvc() {
+    local pvc=$1
+    local snapshot_name=$2
+    new_disk="${pvc}-restored-disk-$(date +%Y%m%d-%H%M%S)"
+    gcloud compute disks create "$new_disk" --source-snapshot="$snapshot_name" --zone="$ZONE"
+    cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-$pvc
+spec:
+  capacity:
+    storage: 100Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: $STORAGE_CLASS
+  claimRef:
+    name: $pvc
+    namespace: $NAMESPACE
+  csi:
+    driver: pd.csi.storage.gke.io
+    volumeHandle: projects/$PROJECT_ID/zones/$ZONE/disks/$new_disk
+    fsType: ext4
+EOF
+}
+
+backup_statefulset() {
+    local sts=$1
+    replicas=$(kubectl get statefulset "$sts" -n "$NAMESPACE" -o jsonpath='{.spec.replicas}')
+    for ((i=0; i<$replicas; i++)); do
+        backup_pvc "datadir-$sts-$i"
+    done
+}
+
+restore_statefulset() {
+    local sts=$1
+    replicas=$(kubectl get statefulset "$sts" -n "$NAMESPACE" -o jsonpath='{.spec.replicas}')
+    for ((i=0; i<$replicas; i++)); do
+        pvc_name="datadir-$sts-$i"
+        snapshot_name=$(grep "^$pvc_name," "$SNAPSHOT_LOG" | cut -d',' -f3)
+        restore_pvc "$pvc_name" "$snapshot_name"
+    done
+}
+
+main() {
+    > "$SNAPSHOT_LOG"
+
+    echo "Starting backup process..."
+    for sts in "${STATEFULSETS[@]}"; do
+        backup_statefulset "$sts"
+    done
+    for pvc in "${OTHER_PVCS[@]}"; do
+        backup_pvc "$pvc"
+    done
+    echo "Backup complete. Snapshots saved in $SNAPSHOT_LOG."
+
+    echo "Scaling StatefulSets down..."
+    for sts in "${STATEFULSETS[@]}"; do
+        kubectl scale statefulset "$sts" --replicas=0 -n "$NAMESPACE"
+    done
+
+    for sts in "${STATEFULSETS[@]}"; do
+        replicas=$(kubectl get statefulset "$sts" -n "$NAMESPACE" -o jsonpath='{.spec.replicas}')
+        for ((i=0; i<$replicas; i++)); do
+            kubectl delete pvc "datadir-$sts-$i" -n "$NAMESPACE" --ignore-not-found
+        done
+    done
+
+    for pvc in "${OTHER_PVCS[@]}"; do
+        kubectl delete pvc "$pvc" -n "$NAMESPACE" --ignore-not-found
+    done
+
+    echo "Starting restore process..."
+    for sts in "${STATEFULSETS[@]}"; do
+        restore_statefulset "$sts"
+    done
+    for pvc in "${OTHER_PVCS[@]}"; do
+        snapshot_name=$(grep "^$pvc," "$SNAPSHOT_LOG" | cut -d',' -f3)
+        restore_pvc "$pvc" "$snapshot_name"
+    done
+
+    echo "Restoration complete. Scaling StatefulSets back up..."
+    for sts in "${STATEFULSETS[@]}"; do
+        kubectl scale statefulset "$sts" --replicas=3 -n "$NAMESPACE"
+    done
+
+    echo "Backup & restore process complete."
+}
+
+main
+
