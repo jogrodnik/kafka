@@ -1,0 +1,83 @@
+#!/bin/bash
+
+# CONFIGURATION
+BOOTSTRAP_SERVER="your-controller-address:9092"
+BACKUP_DIR="/path/to/backup/dir"
+BACKUP_FILE="${BACKUP_DIR}/kafka_acls_backup_$(date +'%Y-%m-%d_%H-%M-%S').txt"
+
+# Ensure backup directory exists
+mkdir -p "$BACKUP_DIR"
+
+# LOGGING FUNCTION
+log() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1"
+}
+
+# BACKUP FUNCTION
+backup_acls() {
+    log "Starting Kafka ACL backup..."
+    kafka-acls.sh --bootstrap-server $BOOTSTRAP_SERVER --list > "$BACKUP_FILE"
+    if [ $? -eq 0 ]; then
+        log "Backup completed: $BACKUP_FILE"
+    else
+        log "ERROR: Failed to backup ACLs!"
+        exit 1
+    fi
+}
+
+# RESTORE FUNCTION
+restore_acls() {
+    if [ -z "$1" ]; then
+        log "ERROR: No backup file provided for restore!"
+        exit 1
+    fi
+
+    BACKUP_FILE="$1"
+    log "Starting Kafka ACL restore from $BACKUP_FILE..."
+
+    # Process each ACL line (skipping empty lines and headers)
+    grep -E "Current ACLs for resource|User:" "$BACKUP_FILE" | while read -r line; do
+        if [[ "$line" == "Current ACLs for resource:"* ]]; then
+            # Extract the resource details
+            RESOURCE=$(echo "$line" | awk -F: '{print $2}' | tr -d ' ')
+            TYPE=$(echo "$RESOURCE" | awk -F= '{print $1}')
+            NAME=$(echo "$RESOURCE" | awk -F= '{print $2}')
+        elif [[ "$line" == "User:"* ]]; then
+            # Parse individual ACL entry
+            USER=$(echo "$line" | awk '{print $1}' | sed 's/User://')
+            PERM=$(echo "$line" | awk '{print $2}')
+            OP=$(echo "$line" | awk '{print $3}')
+            HOST=$(echo "$line" | awk '{print $4}')
+
+            # Create ACL (apply)
+            kafka-acls.sh --bootstrap-server $BOOTSTRAP_SERVER --add \
+                --allow-principal "$USER" \
+                --operation "$OP" \
+                --host "$HOST" \
+                --resource-type "$TYPE" \
+                --resource-name "$NAME"
+
+            if [ $? -eq 0 ]; then
+                log "Restored ACL for $USER on $TYPE:$NAME ($PERM $OP from $HOST)"
+            else
+                log "ERROR: Failed to restore ACL for $USER on $TYPE:$NAME"
+            fi
+        fi
+    done
+
+    log "ACL restore completed."
+}
+
+# MENU HANDLER
+case "$1" in
+    backup)
+        backup_acls
+        ;;
+    restore)
+        restore_acls "$2"
+        ;;
+    *)
+        echo "Usage: $0 {backup|restore <backup_file>}"
+        exit 1
+        ;;
+esac
