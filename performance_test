@@ -1,0 +1,19 @@
+kafka-producer-perf-test \
+  --topic perf-test-topic \
+  --num-records 1000000 \
+  --record-size 1024 \
+  --throughput 100000 \
+  --producer-props \
+      bootstrap.servers=kafka-1.example.com:9093,kafka-2.example.com:9093 \
+      acks=all \
+      compression.type=snappy \
+      linger.ms=20 \
+      batch.size=65536 \
+      security.protocol=SSL \
+      ssl.truststore.location=/etc/kafka/secrets/kafka.truststore.jks \
+      ssl.truststore.password=truststore-password \
+      ssl.keystore.location=/etc/kafka/secrets/kafka.keystore.jks \
+      ssl.keystore.password=keystore-password \
+      ssl.key.password=key-password \
+      key.serializer=org.apache.kafka.common.serialization.StringSerializer \
+      value.serializer=org.apache.kafka.common.serialization.ByteArraySerializer
