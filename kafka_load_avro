@@ -1,0 +1,134 @@
+#!/bin/bash
+
+# Configuration
+TOPIC="avro-test"
+BROKER="your-secure-broker:9093"
+SCHEMA_REGISTRY_URL="https://your-schema-registry:8081"
+NUM_MESSAGES=1000
+
+# SSL files
+CA_CERT="certs/ca-cert.pem"
+CLIENT_CERT="certs/client.certificate.pem"
+CLIENT_KEY="certs/client.key.pem"
+TRUSTSTORE="certs/truststore.jks"
+KEYSTORE="certs/keystore.jks"
+STOREPASS="your-store-password"
+
+# Avro key schema (simulated JSON string key)
+KEY_SCHEMA=$(cat <<EOF
+{
+    "type": "record",
+    "name": "UserKey",
+    "fields": [
+        {"name": "userId", "type": "string"},
+        {"name": "region", "type": "string"}
+    ]
+}
+EOF
+)
+
+# Avro value schema
+VALUE_SCHEMA=$(cat <<EOF
+{
+    "type": "record",
+    "name": "User",
+    "fields": [
+        {"name": "userId", "type": "string"},
+        {"name": "name", "type": "string"},
+        {"name": "age", "type": "int"}
+    ]
+}
+EOF
+)
+
+# Register schema (key or value)
+register_schema_if_needed() {
+    local schema_type=$1   # key or value
+    local schema_json=$2
+    local subject="${TOPIC}-${schema_type}"
+    local latest_url="${SCHEMA_REGISTRY_URL}/subjects/${subject}/versions/latest"
+
+    echo "Checking if ${schema_type} schema is registered..."
+
+    if curl -s --fail \
+            --cert "$CLIENT_CERT" \
+            --key "$CLIENT_KEY" \
+            --cacert "$CA_CERT" \
+            "$latest_url" > /dev/null; then
+        echo "${schema_type} schema already registered."
+    else
+        echo "Registering ${schema_type} schema..."
+
+        local payload
+        payload=$(jq -n --arg schema "$schema_json" '{schema: $schema}')
+
+        curl -s -X POST -H "Content-Type: application/vnd.schemaregistry.v1+json" \
+            --cert "$CLIENT_CERT" \
+            --key "$CLIENT_KEY" \
+            --cacert "$CA_CERT" \
+            --data "$payload" \
+            "${SCHEMA_REGISTRY_URL}/subjects/${subject}/versions"
+
+        if [[ $? -ne 0 ]]; then
+            echo "Failed to register ${schema_type} schema." >&2
+            exit 1
+        else
+            echo "${schema_type} schema registered successfully."
+        fi
+    fi
+}
+
+# Generate key (JSON key to simulate Avro key)
+compute_key() {
+    local message_id=$1
+    jq -n --arg userId "user-$message_id" --arg region "EU" \
+        '{userId: $userId, region: $region}'
+}
+
+# Generate Avro value (actual message payload)
+generate_avro_payload() {
+    local message_id=$1
+    jq -n --arg userId "user-$message_id" --arg name "User_$message_id" \
+        --argjson age $((20 + (message_id % 30))) \
+        '{userId: $userId, name: $name, age: $age}'
+}
+
+# Produce 1000 messages (key = JSON string, value = Avro-compliant JSON)
+produce_messages() {
+    local tmp_file=$(mktemp)
+
+    for i in $(seq 1 $NUM_MESSAGES); do
+        local key
+        local value
+        key=$(compute_key "$i")
+        value=$(generate_avro_payload "$i")
+        # Write "key|value" to the file (Kafka reads this format)
+        echo "$key|$value" >> "$tmp_file"
+    done
+
+    echo "Producing $NUM_MESSAGES messages to topic '$TOPIC'..."
+
+    cat "$tmp_file" | kafka-console-producer \
+        --broker-list "$BROKER" \
+        --topic "$TOPIC" \
+        --property "parse.key=true" \
+        --property "key.separator=|" \
+        --producer.config <(cat <<EOF
+security.protocol=SSL
+ssl.truststore.location=$TRUSTSTORE
+ssl.truststore.password=$STOREPASS
+ssl.keystore.location=$KEYSTORE
+ssl.keystore.password=$STOREPASS
+ssl.key.password=$STOREPASS
+EOF
+)
+
+    rm -f "$tmp_file"
+}
+
+# Main execution
+register_schema_if_needed "key" "$KEY_SCHEMA"
+register_schema_if_needed "value" "$VALUE_SCHEMA"
+produce_messages
+
+echo "All done."
