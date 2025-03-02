@@ -1,0 +1,56 @@
+import os
+import subprocess
+import sys
+from jinja2 import Environment, FileSystemLoader
+
+def render_template(namespace):
+    """
+    Render `env-local.sh.j2` into `env-local.sh` using provided namespace.
+    """
+    env = Environment(loader=FileSystemLoader('.'))
+    template = env.get_template('env-local.sh.j2')
+
+    # Render template with namespace variable
+    rendered_content = template.render(namespace=namespace)
+
+    # Write rendered content to `env-local.sh`
+    with open('env-local.sh', 'w') as f:
+        f.write(rendered_content)
+
+    print(f"[INFO] Rendered env-local.sh with namespace='{namespace}'")
+
+def copy_files_to_pod(namespace, pod_name="kafka-0"):
+    """
+    Iterate over all files in the current directory and copy them to the pod using kubectl cp.
+    """
+    files = os.listdir(".")
+    for f in files:
+        # Skip directories, only handle files
+        if os.path.isdir(f):
+            continue
+
+        pod_path = f"/tmp/{f}"
+        cmd = ["kubectl", "-n", namespace, "cp", f, f"{pod_name}:{pod_path}"]
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        if result.returncode == 0:
+            print(f"[INFO] Copied {f} to {pod_name}:{pod_path}")
+        else:
+            print(f"[ERROR] Failed to copy {f}: {result.stderr}")
+
+def main():
+    if len(sys.argv) != 2:
+        print(f"Usage: {sys.argv[0]} <namespace>")
+        sys.exit(1)
+
+    namespace = sys.argv[1]
+
+    # Step 1 - Render env-local.sh from template
+    render_template(namespace)
+
+    # Step 2 - Copy all files to pod kafka-0
+    copy_files_to_pod(namespace)
+
+if __name__ == "__main__":
+    main()
