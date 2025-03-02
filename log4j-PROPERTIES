@@ -1,0 +1,21 @@
+# Root logger at INFO level, change to DEBUG to see everything
+log4j.rootLogger=DEBUG, stderr
+
+# Kafka internal components - focus on these for consumer group debugging
+log4j.logger.org.apache.kafka=DEBUG
+log4j.logger.org.apache.kafka.clients.admin=DEBUG
+log4j.logger.org.apache.kafka.clients.consumer=DEBUG
+log4j.logger.org.apache.kafka.clients.NetworkClient=DEBUG
+log4j.logger.org.apache.kafka.common.network=DEBUG
+log4j.logger.org.apache.kafka.common.requests=DEBUG
+log4j.logger.org.apache.kafka.common.metrics=DEBUG
+log4j.logger.org.apache.kafka.common.security=DEBUG
+log4j.logger.kafka.admin=DEBUG
+
+# Console appender
+log4j.appender.stderr=org.apache.log4j.ConsoleAppender
+log4j.appender.stderr.layout=org.apache.log4j.PatternLayout
+log4j.appender.stderr.layout.ConversionPattern=[%d] %p %c - %m%n
+
+
+KAFKA_OPTS="-Dlog4j.configuration=file:/path/to/log4j-debug.properties" \
