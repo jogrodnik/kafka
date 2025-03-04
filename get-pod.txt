@@ -1,0 +1,31 @@
+import subprocess
+import json
+
+def get_pod_name(deployment_name, namespace='default'):
+    try:
+        # Get all pods in JSON format
+        result = subprocess.run(
+            ['kubectl', 'get', 'pods', '-n', namespace, '-o', 'json'],
+            capture_output=True, text=True, check=True
+        )
+
+        pods = json.loads(result.stdout)
+
+        # Find the pod with a matching deployment name
+        for pod in pods['items']:
+            labels = pod['metadata'].get('labels', {})
+            if labels.get('app') == deployment_name or labels.get('app.kubernetes.io/name') == deployment_name:
+                return pod['metadata']['name']
+
+        return None
+
+    except subprocess.CalledProcessError as e:
+        print(f"Error running kubectl: {e}")
+        return None
+
+# Usage
+pod_name = get_pod_name('unity-support-toolkit', 'your-namespace')
+if pod_name:
+    print(f"Pod name: {pod_name}")
+else:
+    print("Pod not found")
