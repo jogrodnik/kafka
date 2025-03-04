@@ -1,3 +1,4 @@
+
 The current implementation of Unity 2.0 uses the Kafka system installed in IKP for internal communication between pipeline elements. However, the idea behind the project is to optimize performance but still have a large Kafka cluster for both inbound and outbound traffic to Unity 2.0. Therefore, we decided that communication between the Unity components of
 the pipeline should be based on a dedicated cluster for each Project Kafka installed on GKE.
 
@@ -306,3 +307,36 @@ zk_ephemerals_count	0
 zk_approximate_data_size	27
 zk_open_file_descriptor_count	39
 zk_max_file_descriptor_count	1048576
+
+
+import argparse
+
+def main():
+    parser = argparse.ArgumentParser(description="Script with --local flag and optional --namespace argument")
+
+    # --local: optional flag (boolean)
+    parser.add_argument('--local', action='store_true', help='Run in local mode')
+
+    # --namespace: optional string parameter
+    parser.add_argument('--namespace', type=str, help='Namespace to use (optional)')
+
+    # Example required positional argument (e.g., filename)
+    parser.add_argument('filename', type=str, help='The name of the file to process')
+
+    args = parser.parse_args()
+
+    # Logic based on arguments
+    if args.local:
+        print("Running in LOCAL mode")
+    else:
+        print("Running in REMOTE mode")
+
+    if args.namespace:
+        print(f"Using namespace: {args.namespace}")
+    else:
+        print("No namespace provided")
+
+    print(f"Processing file: {args.filename}")
+
+if __name__ == "__main__":
+    main()
