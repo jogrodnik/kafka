@@ -1,0 +1,8 @@
+An election happens when:
+
+A controller (leader) fails.
+A broker joins or leaves the quorum.
+The leader becomes unresponsive (network issue, overloaded, etc.).
+The followers detect the leader failure if:
+
+They don't receive heartbeats from the leader within quorum.election.timeout.ms.
