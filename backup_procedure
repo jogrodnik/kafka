@@ -1,0 +1,45 @@
+3. Components to Backup
+3.1 Kafka Cluster
+Metadata:
+
+__cluster_metadata topic: Contains critical cluster metadata.
+Backup Method: Regular snapshots of the log directories where this topic resides.
+Frequency: Every 15-60 minutes.
+Storage Location: Secure offsite storage (e.g., AWS S3, Google Cloud Storage).
+Topic Data:
+
+All application-specific topics.
+Backup Method: Snapshot log directories containing topic data.
+Frequency: Every 15-60 minutes.
+Storage Location: Secure offsite storage.
+Consumer Offsets:
+
+__consumer_offsets topic: Tracks consumer read positions.
+Backup Method: Snapshot log directories containing this topic.
+Frequency: Every 15-60 minutes.
+Storage Location: Secure offsite storage.
+Configuration Files:
+
+Kafka broker configurations (e.g., server.properties).
+Backup Method: Copy configuration files.
+Frequency: Upon any configuration change.
+Storage Location: Secure offsite storage.
+Security Credentials:
+
+TLS certificates, SASL configurations, ACLs.
+Backup Method: Copy security-related files.
+Frequency: Upon any credential change.
+Storage Location: Secure offsite storage.
+3.2 Schema Registry
+Schemas:
+
+Stored in the _schemas topic within Kafka.
+Backup Method: Snapshot log directories containing this topic.
+Frequency: Every 15-60 minutes.
+Storage Location: Secure offsite storage.
+Configuration Files:
+
+Schema Registry configurations (e.g., schema-registry.properties).
+Backup Method: Copy configuration files.
+Frequency: Upon any configuration change.
+Storage Location: Secure offsite storage.
