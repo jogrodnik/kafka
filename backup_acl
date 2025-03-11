@@ -36,27 +36,22 @@ restore_acls() {
     log "Starting Kafka ACL restore from $BACKUP_FILE..."
 
     # Read ACLs and process them
-    while IFS= read -r line; do
-        # Detect Zookeeper-based ACL format (Topic:orders)
-        if [[ "$line" =~ ^Current\ ACLs\ for\ resource\ `([^:]+):([^`]+)` ]]; then
-            RESOURCE_TYPE="${BASH_REMATCH[1]}"
-            RESOURCE_NAME="${BASH_REMATCH[2]}"
-            PATTERN_TYPE="LITERAL"
-        fi
-
-        # Detect KRaft format (ResourcePattern(resourceType=TOPIC, name=orders, patternType=PREFIXED))
+     while IFS= read -r line; do
+        # Detect "ResourcePattern(resourceType=TOPIC, name=orders, patternType=PREFIXED)"
         if [[ "$line" =~ ResourcePattern\(resourceType=([^,]+),\ name=([^,]+),\ patternType=([^)]+)\) ]]; then
             RESOURCE_TYPE="${BASH_REMATCH[1]}"
             RESOURCE_NAME="${BASH_REMATCH[2]}"
             PATTERN_TYPE="${BASH_REMATCH[3]}"
+            log "📌 Detected Resource - Type: $RESOURCE_TYPE, Name: $RESOURCE_NAME, PatternType: $PATTERN_TYPE"
         fi
 
-        # Detect ACL entries (principal=User:CN-..., host=*, operation=READ, permissionType=ALLOW)
+        # Detect ACL entry in format: (principal=User:CN-..., host=*, operation=READ, permissionType=ALLOW)
         if [[ "$line" =~ \(principal=([^,]+),\ host=([^,]+),\ operation=([^,]+),\ permissionType=([^)]+)\) ]]; then
             PRINCIPAL="${BASH_REMATCH[1]}"
             HOST="${BASH_REMATCH[2]}"
             OPERATION="${BASH_REMATCH[3]}"
             PERMISSION_TYPE="${BASH_REMATCH[4]}"
+            log "🔄 Restoring ACL - Principal: $PRINCIPAL, Operation: $OPERATION, Host: $HOST, PermissionType: $PERMISSION_TYPE"
 
             # Apply ACL
             kafka-acls.sh --bootstrap-server $BOOTSTRAP_SERVER --add \
@@ -68,9 +63,9 @@ restore_acls() {
                 --pattern-type "$PATTERN_TYPE"
 
             if [ $? -eq 0 ]; then
-                log "Restored ACL for $PRINCIPAL on $RESOURCE_TYPE:$RESOURCE_NAME ($PERMISSION_TYPE $OPERATION from $HOST) - PatternType: $PATTERN_TYPE"
+                log "✅ Successfully restored ACL for $PRINCIPAL on $RESOURCE_TYPE:$RESOURCE_NAME"
             else
-                log "ERROR: Failed to restore ACL for $PRINCIPAL on $RESOURCE_TYPE:$RESOURCE_NAME"
+                log "❌ ERROR: Failed to restore ACL for $PRINCIPAL on $RESOURCE_TYPE:$RESOURCE_NAME"
             fi
         fi
     done < "$BACKUP_FILE"
