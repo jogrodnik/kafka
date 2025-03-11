@@ -3,9 +3,6 @@
 # CONFIGURATION
 BOOTSTRAP_SERVER="your-controller-address:9092"
 BACKUP_DIR="/path/to/backup/dir"
-BACKUP_FILE="${BACKUP_DIR}/kafka_acls_backup_$(date +'%Y-%m-%d_%H-%M-%S').txt"
-
-# Ensure backup directory exists
 mkdir -p "$BACKUP_DIR"
 
 # LOGGING FUNCTION
@@ -15,8 +12,11 @@ log() {
 
 # BACKUP FUNCTION
 backup_acls() {
+    BACKUP_FILE="${BACKUP_DIR}/kafka_acls_backup_$(date +'%Y-%m-%d_%H-%M-%S').txt"
     log "Starting Kafka ACL backup..."
+    
     kafka-acls.sh --bootstrap-server $BOOTSTRAP_SERVER --list > "$BACKUP_FILE"
+
     if [ $? -eq 0 ]; then
         log "Backup completed: $BACKUP_FILE"
     else
@@ -35,35 +35,45 @@ restore_acls() {
     BACKUP_FILE="$1"
     log "Starting Kafka ACL restore from $BACKUP_FILE..."
 
-    # Process each ACL line (skipping empty lines and headers)
-    grep -E "Current ACLs for resource|User:" "$BACKUP_FILE" | while read -r line; do
-        if [[ "$line" == "Current ACLs for resource:"* ]]; then
-            # Extract the resource details
-            RESOURCE=$(echo "$line" | awk -F: '{print $2}' | tr -d ' ')
-            TYPE=$(echo "$RESOURCE" | awk -F= '{print $1}')
-            NAME=$(echo "$RESOURCE" | awk -F= '{print $2}')
-        elif [[ "$line" == "User:"* ]]; then
-            # Parse individual ACL entry
-            USER=$(echo "$line" | awk '{print $1}' | sed 's/User://')
-            PERM=$(echo "$line" | awk '{print $2}')
-            OP=$(echo "$line" | awk '{print $3}')
-            HOST=$(echo "$line" | awk '{print $4}')
+    # Read ACLs and process them
+    while IFS= read -r line; do
+        # Detect Zookeeper-based ACL format (Topic:orders)
+        if [[ "$line" =~ ^Current\ ACLs\ for\ resource\ `([^:]+):([^`]+)` ]]; then
+            RESOURCE_TYPE="${BASH_REMATCH[1]}"
+            RESOURCE_NAME="${BASH_REMATCH[2]}"
+            PATTERN_TYPE="LITERAL"
+        fi
 
-            # Create ACL (apply)
+        # Detect KRaft format (ResourcePattern(resourceType=TOPIC, name=orders, patternType=PREFIXED))
+        if [[ "$line" =~ ResourcePattern\(resourceType=([^,]+),\ name=([^,]+),\ patternType=([^)]+)\) ]]; then
+            RESOURCE_TYPE="${BASH_REMATCH[1]}"
+            RESOURCE_NAME="${BASH_REMATCH[2]}"
+            PATTERN_TYPE="${BASH_REMATCH[3]}"
+        fi
+
+        # Detect ACL entries (principal=User:CN-..., host=*, operation=READ, permissionType=ALLOW)
+        if [[ "$line" =~ \(principal=([^,]+),\ host=([^,]+),\ operation=([^,]+),\ permissionType=([^)]+)\) ]]; then
+            PRINCIPAL="${BASH_REMATCH[1]}"
+            HOST="${BASH_REMATCH[2]}"
+            OPERATION="${BASH_REMATCH[3]}"
+            PERMISSION_TYPE="${BASH_REMATCH[4]}"
+
+            # Apply ACL
             kafka-acls.sh --bootstrap-server $BOOTSTRAP_SERVER --add \
-                --allow-principal "$USER" \
-                --operation "$OP" \
+                --allow-principal "$PRINCIPAL" \
+                --operation "$OPERATION" \
                 --host "$HOST" \
-                --resource-type "$TYPE" \
-                --resource-name "$NAME"
+                --resource-type "$RESOURCE_TYPE" \
+                --resource-name "$RESOURCE_NAME" \
+                --pattern-type "$PATTERN_TYPE"
 
             if [ $? -eq 0 ]; then
-                log "Restored ACL for $USER on $TYPE:$NAME ($PERM $OP from $HOST)"
+                log "Restored ACL for $PRINCIPAL on $RESOURCE_TYPE:$RESOURCE_NAME ($PERMISSION_TYPE $OPERATION from $HOST) - PatternType: $PATTERN_TYPE"
             else
-                log "ERROR: Failed to restore ACL for $USER on $TYPE:$NAME"
+                log "ERROR: Failed to restore ACL for $PRINCIPAL on $RESOURCE_TYPE:$RESOURCE_NAME"
             fi
         fi
-    done
+    done < "$BACKUP_FILE"
 
     log "ACL restore completed."
 }
