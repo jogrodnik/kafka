@@ -48,11 +48,12 @@ restore_acls() {
             log "📌 Detected Resource - Type: $RESOURCE_TYPE, Name: $RESOURCE_NAME, PatternType: $PATTERN_TYPE"
         fi
 
-        if [[ "$line" =~ \(principal=User:([^,]+),\ *(hoats|host)=([^,]+),\ *operation=([^,]+),\ *permissionTYpe=([A-Z_]+)\) ]]; then
+        # Detect ACL entry format: (principal=User:CN=..., host=*, operation=READ, permissionType=ALLOW)
+        if [[ "$line" =~ \(principal=User:([^,]+),\s*host=([^,]+),\s*operation=([^,]+),\s*permission[Tt]ype=([A-Z_]+)\) ]]; then
             PRINCIPAL="User:${BASH_REMATCH[1]}"  # Keep User: prefix
-            HOST="${BASH_REMATCH[3]}"
-            OPERATION="${BASH_REMATCH[4]}"
-            PERMISSION_TYPE="${BASH_REMATCH[5]}"
+            HOST="${BASH_REMATCH[2]}"
+            OPERATION="${BASH_REMATCH[3]}"
+            PERMISSION_TYPE="${BASH_REMATCH[4]}"
 
             log "🔄 Restoring ACL - Principal: $PRINCIPAL, Operation: $OPERATION, Host: $HOST, PermissionType: $PERMISSION_TYPE"
 
