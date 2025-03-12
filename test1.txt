@@ -1,0 +1,27 @@
+#!/bin/bash
+
+extract_acl_fields() {
+    local line="$1"
+
+    # ✅ Define Regular Expression Pattern
+    local regex='\(principal=User:([^,]+),\s*host=([^,]+),\s*operation=([^,]+),\s*perm[ie]ssion[Tt]ype=([A-Z_]+)\)'
+
+    # ✅ Apply Regex Matching
+    if [[ "$line" =~ $regex ]]; then
+        PRINCIPAL="User:${BASH_REMATCH[1]}"
+        HOST="${BASH_REMATCH[2]}"
+        OPERATION="${BASH_REMATCH[3]}"
+        PERMISSION_TYPE="${BASH_REMATCH[4]}"
+
+        # ✅ Print Extracted Values
+        echo "Principal: $PRINCIPAL"
+        echo "Host: $HOST"
+        echo "Operation: $OPERATION"
+        echo "Permission Type: $PERMISSION_TYPE"
+    else
+        echo "❌ No match found!"
+    fi
+}
+
+# ✅ Pass the ACL Line as an Argument
+extract_acl_fields "(principal=User:CN=INAIKAFKAP,OU=AUTH,O=AP,L=KAFKAPROD,ST=Unknown,C=IN, host=*, operation=WRITE, permisionType=ALLOW)"
