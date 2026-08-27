@@ -1,0 +1,39 @@
+                 LEADER LOST
+                      │
+                      ▼
+              Is another ISR
+              replica alive?
+                 /        \
+               YES         NO
+                │           │
+                ▼           ▼
+        Kafka automatically  Partition has
+        elects new leader    no leader
+                │           │
+                │           ▼
+                │      Are you willing
+                │      to risk data loss?
+                │        /       \
+                │       NO       YES
+                │       │         │
+                │       ▼         ▼
+                │     WAIT      UNCLEAN
+                │     /recover   election
+                │
+                ▼
+         Check ISR size
+                │
+                ▼
+       ISR >= minISR ?
+           /        \
+         YES         NO
+          │           │
+          ▼           ▼
+       writes       leader exists,
+       continue     but acks=all
+                    writes fail
+                       │
+                       ▼
+                  DR decision:
+                  reduce minISR
+                  e.g. 3 → 2
