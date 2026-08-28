@@ -1,0 +1,34 @@
+{
+    "folders": [
+        {
+            "path": "../kafka-k8s"
+        },
+        {
+            "path": "../../kube/minikube"
+        },
+        {
+            "path": "../kafka-kraft-docker-compose"
+        },
+        {
+            "path": "../../kube/kubeadm-scripts"
+        },
+        {
+            "path": "../../kube/kubeadm-scripts-main"
+        },
+        {
+            "path": "../../terraform/gcp_cloud-psc"
+        },
+        {
+            "path": "../../../../home/jogrodnik/workspaces/gcp/cff-fast-lz"
+        },
+        {
+            "path": "../../helm/kafka"
+        },
+        {
+            "path": "../kafka-docker-composer"
+        },
+        {
+            "path": "../../kube/kube-adm"
+        }
+    ]
+}

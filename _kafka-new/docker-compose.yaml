@@ -1,0 +1,298 @@
+version: "3"
+
+# Every service should have the prefix "iana_" in the container_name
+services:
+  predict:
+    restart: always
+    image: certi_iana_predict
+    container_name: iana_predict
+    build:
+      context: ./predict
+      dockerfile: ./docker/Dockerfile
+    ports:
+      - "5000:5000"
+      - "8504:8504"
+    volumes:
+      - ./predict/src:/iana/predict/src
+      - ./predict/models:/iana/predict/models
+    privileged: true
+
+#-----------------------------------------
+ #    #    ##    ######  #    #    ##
+ #   #    #  #   #       #   #    #  #
+ ####    #    #  #####   ####    #    #
+ #  #    ######  #       #  #    ######
+ #   #   #    #  #       #   #   #    #
+ #    #  #    #  #       #    #  #    #
+  zk-1:
+    image: confluentinc/cp-zookeeper:7.3.2-1-ubi8
+    restart: always
+    hostname: zk-1
+    container_name: iana_zk-1
+    ports:
+      - "12181:12181"
+    volumes:
+      - data-zk-log-1:/var/lib/zookeeper/log
+      - data-zk-data-1:/var/lib/zookeeper/data
+    networks:
+      - confluent
+    environment:
+      - ZOOKEEPER_SERVER_ID=1
+      - ZOOKEEPER_CLIENT_PORT=12181
+      - ZOOKEEPER_TICK_TIME=2000
+      - ZOOKEEPER_INIT_LIMIT=5
+      - ZOOKEEPER_SYNC_LIMIT=2
+      - ZOOKEEPER_SERVERS=zk-1:2888:3888;zk-2:2888:3888;zk-3:2888:3888
+
+  zk-2:
+    image: confluentinc/cp-zookeeper:7.3.2-1-ubi8
+    restart: always
+    hostname: zk-2
+    container_name: iana_zk-2
+    ports:
+      - "22181:22181"
+    volumes:
+      - data-zk-log-2:/var/lib/zookeeper/log
+      - data-zk-data-2:/var/lib/zookeeper/data
+    networks:
+      - confluent
+    environment:
+      - ZOOKEEPER_SERVER_ID=2
+      - ZOOKEEPER_CLIENT_PORT=22181
+      - ZOOKEEPER_TICK_TIME=2000
+      - ZOOKEEPER_INIT_LIMIT=5
+      - ZOOKEEPER_SYNC_LIMIT=2
+      - ZOOKEEPER_SERVERS=zk-1:2888:3888;zk-2:2888:3888;zk-3:2888:3888
+
+  zk-3:
+    image: confluentinc/cp-zookeeper:7.3.2-1-ubi8
+    restart: always
+    hostname: zk-3
+    container_name: iana_zk-3
+    ports:
+      - "32181:32181"
+    volumes:
+      - data-zk-log-3:/var/lib/zookeeper/log
+      - data-zk-data-3:/var/lib/zookeeper/data
+    networks:
+      - confluent
+    environment:
+      - ZOOKEEPER_SERVER_ID=3
+      - ZOOKEEPER_CLIENT_PORT=32181
+      - ZOOKEEPER_TICK_TIME=2000
+      - ZOOKEEPER_INIT_LIMIT=5
+      - ZOOKEEPER_SYNC_LIMIT=2
+      - ZOOKEEPER_SERVERS=zk-1:2888:3888;zk-2:2888:3888;zk-3:2888:3888
+
+  kafka-1:
+    image: confluentinc/cp-server:7.3.2-1-ubi8
+    restart: always
+    hostname: kafka-1
+    container_name: iana_kafka-1
+    ports:
+      - "19092:19092"
+    networks:
+      - confluent
+    depends_on:
+      - zk-1
+      - zk-2
+      - zk-3
+    volumes:
+      - data-kafka-1:/var/lib/kafka/data
+    environment:
+      KAFKA_BROKER_ID: 101
+      KAFKA_ZOOKEEPER_CONNECT: zk-1:12181,zk-2:22181,zk-3:32181
+      KAFKA_LISTENERS: DOCKER://kafka-1:9092,HOST://kafka-1:19092
+      KAFKA_ADVERTISED_LISTENERS: DOCKER://kafka-1:9092,HOST://kafka-1:19092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: DOCKER:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: DOCKER
+      KAFKA_LOG_RETENTION_HOURS: 1
+      KAFKA_LOG_SEGMENT_BYTES: 536870912
+      KAFKA_LOG_RETENTION_BYTES: 536870912
+      KAFKA_METRIC_REPORTERS: "io.confluent.metrics.reporter.ConfluentMetricsReporter"
+      CONFLUENT_METRICS_REPORTER_BOOTSTRAP_SERVERS: "kafka-1:9092,kafka-2:9092,kafka-3:9092"
+
+  kafka-2:
+    image: confluentinc/cp-server:7.3.2-1-ubi8
+    restart: always
+    hostname: kafka-2
+    container_name: iana_kafka-2
+    ports:
+      - "29092:29092"
+    networks:
+      - confluent
+    volumes:
+      - data-kafka-2:/var/lib/kafka/data
+    environment:
+      KAFKA_BROKER_ID: 102
+      KAFKA_ZOOKEEPER_CONNECT: zk-1:12181,zk-2:22181,zk-3:32181
+      KAFKA_LISTENERS: DOCKER://kafka-2:9092,HOST://kafka-2:29092
+      KAFKA_ADVERTISED_LISTENERS: DOCKER://kafka-2:9092,HOST://kafka-2:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: DOCKER:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: DOCKER
+      KAFKA_LOG_RETENTION_HOURS: 1
+      KAFKA_LOG_SEGMENT_BYTES: 536870912
+      KAFKA_LOG_RETENTION_BYTES: 536870912
+      KAFKA_METRIC_REPORTERS: "io.confluent.metrics.reporter.ConfluentMetricsReporter"
+      CONFLUENT_METRICS_REPORTER_BOOTSTRAP_SERVERS: "kafka-1:9092,kafka-2:9092,kafka-3:9092"
+
+  kafka-3:
+    image: confluentinc/cp-server:7.3.2-1-ubi8
+    restart: always
+    hostname: kafka-3
+    container_name: iana_kafka-3
+    ports:
+      - "39092:39092"
+    networks:
+      - confluent
+    volumes:
+      - data-kafka-3:/var/lib/kafka/data
+    environment:
+      KAFKA_BROKER_ID: 103
+      KAFKA_ZOOKEEPER_CONNECT: zk-1:12181,zk-2:22181,zk-3:32181
+      KAFKA_LISTENERS: DOCKER://kafka-3:9092,HOST://kafka-3:39092
+      KAFKA_ADVERTISED_LISTENERS: DOCKER://kafka-3:9092,HOST://kafka-3:39092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: DOCKER:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: DOCKER
+      KAFKA_LOG_RETENTION_HOURS: 1
+      KAFKA_LOG_SEGMENT_BYTES: 536870912
+      KAFKA_LOG_RETENTION_BYTES: 536870912
+      KAFKA_METRIC_REPORTERS: "io.confluent.metrics.reporter.ConfluentMetricsReporter"
+      CONFLUENT_METRICS_REPORTER_BOOTSTRAP_SERVERS: "kafka-1:9092,kafka-2:9092,kafka-3:9092"
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.3.2-1-ubi8
+    restart: always
+    hostname: schema-registry
+    container_name: iana_schema-registry
+    ports:
+      - "8081:8081"
+    networks:
+      - confluent
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: "kafka-1:9092,kafka-2:9092,kafka-3:9092"
+      SCHEMA_REGISTRY_LISTENERS: "http://schema-registry:8081"
+      # Uses incorrect container utility belt (CUB) environment variables due to bug.
+      # See https://github.com/confluentinc/cp-docker-images/issues/807. A fix was merged that
+      # will be available in the CP 5.4 image.
+      KAFKA_REST_CUB_KAFKA_TIMEOUT: 120
+      KAFKA_REST_CUB_KAFKA_MIN_BROKERS: 3
+
+  # connect:
+  #   image: confluentinc/cp-server-connect:7.3.2-1-ubi8
+  #   restart: always
+  #   hostname: connect
+  #   container_name: iana_connect
+  #   ports:
+  #     - "8083:8083"
+  #   volumes:
+  #     - data-connect:/data
+  #   networks:
+  #     - confluent
+  #   environment:
+  #     CONNECT_PRODUCER_INTERCEPTOR_CLASSES: "io.confluent.monitoring.clients.interceptor.MonitoringProducerInterceptor"
+  #     CONNECT_PRODUCER_CONFLUENT_MONITORING_INTERCEPTOR_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+  #     CONNECT_CONSUMER_INTERCEPTOR_CLASSES: "io.confluent.monitoring.clients.interceptor.MonitoringConsumerInterceptor"
+  #     CONNECT_CONSUMER_CONFLUENT_MONITORING_INTERCEPTOR_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+  #     CONNECT_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+  #     CONNECT_GROUP_ID: "connect"
+  #     CONNECT_CONFIG_STORAGE_TOPIC: "connect-configs"
+  #     CONNECT_OFFSET_STORAGE_TOPIC: "connect-offsets"
+  #     CONNECT_STATUS_STORAGE_TOPIC: "connect-statuses"
+  #     CONNECT_KEY_CONVERTER: "io.confluent.connect.avro.AvroConverter"
+  #     CONNECT_VALUE_CONVERTER: "io.confluent.connect.avro.AvroConverter"
+  #     CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL: "http://schema-registry:8081"
+  #     CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: "http://schema-registry:8081"
+  #     CONNECT_INTERNAL_KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+  #     CONNECT_INTERNAL_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+  #     CONNECT_REST_ADVERTISED_HOST_NAME: "connect"
+  #     CONNECT_LOG4J_ROOT_LOGLEVEL: INFO
+  #     CONNECT_LOG4J_LOGGERS: org.reflections=ERROR
+  #     CONNECT_PLUGIN_PATH: /usr/share/java
+  #     CONNECT_REST_HOST_NAME: "connect"
+  #     CONNECT_REST_PORT: 8083
+  #     CONNECT_CUB_KAFKA_TIMEOUT: 120
+
+  # ksqldb-server:
+  #   image: confluentinc/cp-ksqldb-server:7.3.2-1-ubi8
+  #   restart: always
+  #   hostname: ksqldb-server
+  #   container_name: iana_ksqldb-server
+  #   ports:
+  #     - "8088:8088"
+  #   networks:
+  #     - confluent
+  #   environment:
+  #     KSQL_CONFIG_DIR: "/etc/ksql"
+  #     KSQL_LOG4J_OPTS: "-Dlog4j.configuration=file:/etc/ksqldb/log4j-rolling.properties"
+  #     KSQL_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+  #     KSQL_HOST_NAME: ksqldb-server
+  #     KSQL_APPLICATION_ID: "etl-demo"
+  #     KSQL_LISTENERS: "http://0.0.0.0:8088"
+  #     # Set the buffer cache to 0 so that the KSQL CLI shows all updates to KTables for learning purposes.
+  #     # The default is 10 MB, which means records in a KTable are compacted before showing output.
+  #     # Change cache.max.bytes.buffering and commit.interval.ms to tune this behavior.
+  #     KSQL_CACHE_MAX_BYTES_BUFFERING: 0
+  #     KSQL_KSQL_SCHEMA_REGISTRY_URL: "http://schema-registry:8081"
+  #     KSQL_PRODUCER_INTERCEPTOR_CLASSES: "io.confluent.monitoring.clients.interceptor.MonitoringProducerInterceptor"
+  #     KSQL_PRODUCER_CONFLUENT_MONITORING_INTERCEPTOR_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+  #     KSQL_CONSUMER_INTERCEPTOR_CLASSES: "io.confluent.monitoring.clients.interceptor.MonitoringConsumerInterceptor"
+  #     KSQL_CONSUMER_CONFLUENT_MONITORING_INTERCEPTOR_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+
+  # ksqldb-cli:
+  #   image: confluentinc/cp-ksqldb-cli:7.3.2-1-ubi8
+  #   container_name: iana_ksqldb-cli
+  #   depends_on:
+  #     - kafka-1
+  #     - connect
+  #     - ksqldb-server
+  #   entrypoint: /bin/sh
+  #   tty: true
+
+  # # Kafdrop | WEB UI for visualizing Kafka clusters, topics, partitions, etc...
+  # kafdrop:
+  #   image: obsidiandynamics/kafdrop:3.30.0
+  #   container_name: iana_kafdrop
+  #   hostname: kafdrop
+  #   networks:
+  #     - confluent
+  #   depends_on:
+  #     - kafka-1
+  #     - kafka-2
+  #     - kafka-3
+  #     - schema-registry
+  #   ports:
+  #     - "9000:9000"
+  #   environment:
+  #     KAFKA_BROKERCONNECT: "kafka-1:9092,kafka-2:9092,kafka-3:9092"
+  #     SCHEMAREGISTRY_CONNECT: "http://schema-registry:8081" 
+
+#     #
+#     #   ####   #       #    #  #    #  ######   ####
+#     #  #    #  #       #    #  ##  ##  #       #
+#     #  #    #  #       #    #  # ## #  #####    ####
+ #   #   #    #  #       #    #  #    #  #            #
+  # #    #    #  #       #    #  #    #  #       #    #
+   #      ####   ######   ####   #    #  ######   ####
+volumes:
+  data-zk-log-1:
+  data-zk-data-1:
+  data-zk-log-2:
+  data-zk-data-2:
+  data-zk-log-3:
+  data-zk-data-3:
+  data-kafka-1:
+  data-kafka-2:
+  data-kafka-3:
+  data-connect:
+
+#     #
+##    #  ######   #####  #    #   ####   #####   #    #   ####
+# #   #  #          #    #    #  #    #  #    #  #   #   #
+#  #  #  #####      #    #    #  #    #  #    #  ####     ####
+#   # #  #          #    # ## #  #    #  #####   #  #         #
+#    ##  #          #    ##  ##  #    #  #   #   #   #   #    #
+#     #  ######     #    #    #   ####   #    #  #    #   ####
+networks:
+  confluent:
