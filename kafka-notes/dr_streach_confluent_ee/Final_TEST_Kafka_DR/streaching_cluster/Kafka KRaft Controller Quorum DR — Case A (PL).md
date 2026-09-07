@@ -1,0 +1,974 @@
+# Kafka KRaft Controller Quorum DR — Case A: całkowita utrata DC1 w Confluent Platform EE 8.3.0
+
+## Streszczenie wykonawcze
+
+Rozpatrywany stan początkowy to pięciu voterów KRaft: DC1 = C101, C102, C103 oraz DC2 = C201, C202. Większość wynosi trzy. Po całkowitej utracie DC1 pozostają tylko dwa głosy z pięciu, więc stary quorum {C101, C102, C103, C201, C202} nie może wybrać lidera ani zatwierdzać nowych wpisów metadanych. Sama zmiana `controller.quorum.bootstrap.servers` lub restart C201/C202 nie zmienia składu voterów — w dynamicznym KRaft lista bootstrap służy do odnalezienia quorum, natomiast rzeczywisty membership jest stanem replikowanym przez KRaft. Apache Kafka rozróżnia dynamiczny quorum (`kraft.version >= 1`) od statycznego (`kraft.version=0` lub brak tej funkcji).
+
+Confluent Platform 8.3.x jest oparty na Apache Kafka 4.3.x; CP 8.3.x został wydany 17 czerwca 2026 r. Dla dynamicznego quorum Confluent opublikował w 2026 r. procedurę odzyskiwania po utracie quorum: zatrzymać ocalałe kontrolery, zmierzyć ich metadata epoch i log end offset, wybrać jeden seed według reguły „najwyższy epoch”, a dopiero przy remisie „największy LEO”, wykonać na nim offline `kafka-metadata-recovery reconfig force-standalone`, uruchomić go jako jednoelementowy quorum, a następnie wyczyścić starą kopię `__cluster_metadata-0` na pozostałych kontrolerach, uruchomić je jako observerów i promować przez `kafka-metadata-quorum add-controller`. `force-standalone` przepisuje voter set do pojedynczego seeda w wyższym epoch i jest operacją nieodwracalną.
+
+To jest właściwy model recovery dla Case A, ale występuje istotne ograniczenie dokumentacyjne: szczegółowa publiczna procedura `reconfig force-standalone` jest obecnie opublikowana przez Confluent w dokumentacji Disaster Recovery dla Confluent for Kubernetes, nie jako osobny bare-metal runbook dla CP EE 8.3.0. Sam `kafka-metadata-recovery` występuje również w publicznej dokumentacji Confluent Platform, lecz w innych workflow. Dlatego dla instalacji RPM/TAR/VM Confluent EE 8.3.0 należy przed operacją potwierdzić lokalnie dostępność subkomendy i jej składnię, a samo `force-standalone` traktować jako operację wymagającą Confluent Support; Confluent wprost zaleca Support dla ręcznej ścieżki właśnie dlatego, że rebuild jest nieodwracalny.
+
+Najważniejszym ograniczeniem spójności jest fakt, że utracone DC1 posiadało większość 3/5. W Raft wpis mógł zostać committed przez dokładnie C101+C102+C103 i nigdy nie dotrzeć ani do C201, ani do C202. Dlatego nawet idealnie wykonana odbudowa z najlepszego seeda w DC2 nie gwarantuje RPO=0 dla metadanych. Confluent mówi wprost, że gdy utracony region posiadał większość voterów, recovery może utracić część wcześniej zatwierdzonych metadanych. Dane topiców na brokerowych wolumenach są odrębną kwestią i mogą przetrwać mimo utraty odpowiadających im wpisów control-plane.
+
+Z tego wynika istotny wniosek: nie istnieje procedura, która z samych C201 i C202 odtworzy wpisy metadanych, których nigdy nie posiadał żaden z tych dwóch kontrolerów. Identyczne epoch/LEO na C201 i C202 zwiększają zaufanie do wspólnej kopii, ale nie dowodzą, że nie istniał późniejszy committed prefix obecny wyłącznie na większości DC1. Ostateczne RPO metadanych jest więc w tym scenariuszu nieokreślone bez kopii C101/C102/C103 albo zewnętrznego źródła prawdy. Ten wniosek wynika bezpośrednio z topologii 3+2 oraz ostrzeżenia Confluent dotyczącego utraty regionu z większością.
+
+Nie wolno zastępować recovery komendą `kafka-storage format --standalone` na C201 lub C202. `kafka-storage format --standalone` służy do bootstrappingu nowego, pustego dynamicznego quorum; Kafka celowo nie auto-formatuje pustych katalogów metadanych, ponieważ umożliwienie większości kontrolerów startu z pustym logiem mogłoby doprowadzić do wyboru lidera bez wcześniej committed danych. W istniejącym klastrze formatowanie ocalałego seeda byłoby destrukcyjnym utworzeniem nowego bootstrap state, a nie rekonstrukcją starego logu.
+
+Po odbudowie C201+C202 uzyskujemy quorum 2-voterowe, którego większość nadal wynosi dwa: utrata dowolnego z tych dwóch kontrolerów ponownie zatrzyma quorum. Dlatego stan 2-voter należy uważać za tymczasowy. Operacyjnie należy jak najszybciej provisionować co najmniej trzeci nowy controller — w raporcie oznaczony jako `<C203>` — uzyskując trzy votery i większość dwa. Lokalizacja, hostname, `node.id`, port, `metadata.log.dir` i infrastruktura C203 są w pytaniu nieokreślone. Procedura dodawania świeżego kontrolera do istniejącego dynamicznego quorum używa `kafka-storage ... --no-initial-controllers`, następnie synchronizacji jako observer i `kafka-metadata-quorum add-controller`.
+
+Całe recovery można wykonać bez własnego kodu Java. Wymagane są narzędzia dostarczane przez Kafka/Confluent, shell, konfiguracja i ewentualnie systemowy mechanizm stop/start procesu.
+
+## Założenia, granice i warunki wejściowe
+
+Niniejszy runbook przyjmuje Confluent Platform Enterprise 8.3.0, a więc rodzinę Kafka 4.3.x. Publiczne dokumenty platform/current opisują rodzinę 8.3.x i mogą zawierać poprawki z późniejszych patchy, dlatego elementy standardowego Kafka 4.3, takie jak dynamic membership, `kafka-metadata-quorum`, `kafka-storage` i KRaft v1, są dobrze zdefiniowane na poziomie tej linii, natomiast dostępność dokładnej vendorowej implementacji `kafka-metadata-recovery reconfig force-standalone` w konkretnym artefakcie 8.3.0 należy sprawdzić lokalnie przed wykonaniem operacji.
+
+| Element | Stan w Case A |
+|---|---|
+| Oryginalny voter set | C101, C102, C103, C201, C202 |
+| Majority | 3 |
+| Pozostali po katastrofie | C201, C202 |
+| Możliwa normalna elekcja w starym quorum | Nie — 2 < 3 |
+| Dyski/backupy DC1 | Brak, zgodnie z założeniem |
+| Metadata C201/C202 | Zakłada się, że lokalne katalogi ocalały; ich faktyczną integralność trzeba zweryfikować |
+| node.id C201/C202 | Nieokreślone; C201 nie oznacza automatycznie node.id=201 |
+| Controller hostnames/porty | Nieokreślone; przykłady używają `<C201_CTRL>` i `<C202_CTRL>` |
+| metadata.log.dir | Nieokreślone |
+| TLS/SASL | Nieokreślone |
+| Nazwa jednostki systemd/usługi | Nieokreślona |
+| Broker topology i przeżywalność brokerów | Nieokreślone |
+| Static vs dynamic quorum | Nieokreślone i krytyczne |
+| External metadata inventory / IaC | Nieokreślone |
+| Docelowa topologia po DR | Poza C201/C202 nieokreślona |
+
+Pierwszą bramką decyzyjną jest zatem rodzaj quorum. Confluent i Apache definiują dynamiczny quorum jako `kraft.version >= 1`, z `controller.quorum.bootstrap.servers` i bez `controller.quorum.voters`; statyczny quorum ma `kraft.version=0` lub brak feature oraz konfiguruje wszystkich voterów przez `controller.quorum.voters`. Standardowe `add-controller` i `remove-controller` dotyczą dynamicznego quorum.
+
+Na zdrowym klastrze właściwa weryfikacja wygląda następująco:
+
+```bash
+$CONFLUENT_HOME/bin/kafka-features.sh \
+  --bootstrap-controller <CONTROLLER_HOST:CONTROLLER_PORT> \
+  describe
+```
+
+`FinalizedVersionLevel: 1` dla `kraft.version` oznacza dynamiczny quorum; `0` lub brak feature oznacza statyczny. Po utracie quorum polecenie może oczywiście nie zwrócić odpowiedzi, dlatego trzeba również sprawdzić zachowaną konfigurację i wcześniejsze dane operacyjne.
+
+Na C201 i C202 należy sprawdzić co najmniej:
+
+```bash
+grep -E \
+'^(process.roles|node.id|metadata.log.dir|log.dirs|listeners|controller.listener.names|controller.quorum.voters|controller.quorum.bootstrap.servers|controller.quorum.auto.join.enable)=' \
+/etc/kafka/controller.properties
+```
+
+Ścieżka `/etc/kafka/controller.properties` jest przykładowa; Confluent instaluje przykładowe pliki `broker.properties`, `controller.properties` i `server.properties` w `/etc/kafka`, ale ścieżka używana w danym wdrożeniu pozostaje nieokreślona. Controller-only production configuration używa `process.roles=controller`, unikalnego `node.id`, listenera controller i `controller.listener.names`.
+
+Jeżeli konfiguracja i zachowane informacje potwierdzają static quorum, niniejszy manualny runbook `force-standalone → Observer → add-controller` należy zatrzymać. Publiczne procedury dynamic membership nie pozwalają po prostu edytować `controller.quorum.voters` na C201/C202 i uznać ich za nowe 2-voter quorum. Migracja static→dynamic jest normalnie wykonywana przy działającym klastrze przez aktualizację `kraft.version`, a Confluent wymaga w jej prerequisites zdrowych brokerów i kontrolerów. W stanie 2/5 tego warunku nie ma. Dalszą ścieżkę dla statycznego quorum należy prowadzić z Confluent Support.
+
+Jeżeli quorum jest dynamiczny, użycie `controller.quorum.bootstrap.servers=C201,C202` nie zmniejszy samo z siebie voter setu. Jest to jedynie lista adresów używanych do odnalezienia aktualnego quorum. Dlatego nie należy próbować „naprawy” polegającej jedynie na usunięciu C101–C103 z tego parametru.
+
+## Mechanika KRaft podczas i po utracie quorum
+
+W tym scenariuszu trzeba rozdzielić kilka warstw, które w praktyce często są mylone: fizyczny metadata log, stan Raft i High Watermark, MetadataImage, KafkaRaftClient oraz aktywny QuorumController.
+
+| Warstwa | Co dzieje się w Case A |
+|---|---|
+| Metadata log `__cluster_metadata-0` | C201 i C202 zachowują własne lokalne kopie logu/snapshotów, ale mogą mieć różne końcówki |
+| Raft membership | Nadal logicznie 5 voterów, dopóki offline recovery nie utworzy nowego voter setu |
+| Leader | Po utracie C101–C103 brak możliwości uzyskania 3 głosów, więc stary quorum nie wybierze lidera |
+| High Watermark | Oznacza granicę committed logu znaną danemu członkowi; może być nieznany (-1) albo zatrzymać się na ostatnim znanym committed punkcie |
+| LEO | Lokalny koniec logu; może być większy od HW, ponieważ końcówka logu może być niecommitted |
+| Metadata Image | Powstaje ze snapshotu i committed rekordów dostarczanych przez Raft; nie należy jej utożsamiać z „całym LEO” |
+| KafkaRaftClient | Odpowiada za role Raft, elekcję, replikację, HW i dostarczanie committed records listenerom |
+| QuorumController | Aktywny controller wykonuje operacje control-plane dopiero po uzyskaniu roli aktywnego controller wynikającej z leadership Raft |
+
+Confluent udostępnia dokładne metryki `kafka.server:type=raft-metrics`: `current-state` może przyjmować m.in. `leader`, `candidate`, `follower`, `unattached`, `observer`; `current-leader=-1` oznacza nieznanego lidera, `high-watermark=-1` oznacza nieznany HW, a `log-end-offset` pokazuje bieżący koniec lokalnego Raft logu.
+
+LEO nie jest punktem commit. W kodzie Kafka 4.3 `KafkaRaftClient` follower ustawia swój HW na minimum z własnego end offset i HW przekazanego przez lidera. Leader aktualizuje własny HW przez `LeaderState`, zapisuje go do logu i dopiero potem informuje listenerów o nowo committed zakresie. To jest powód, dla którego nie wolno ręcznie „ustawiać” HW ani kopiować losowo segmentów z C201 do C202 lub odwrotnie.
+
+Istotna jest również elekcja po rebuildzie. W Kafka 4.3 po przejściu Candidate→Leader `KafkaRaftClient` inicjalizuje nowy epoch i natychmiast zapisuje start-of-epoch control records. Komentarz w kodzie wyjaśnia, że High Watermark może przesunąć się po elekcji dopiero po zapisaniu rekordu pochodzącego z epoch nowego lidera. Dlatego po `force-standalone` nie należy oczekiwać, że proces jedynie „odczyta stary numer HW” — następuje nowa legalna sekwencja Raft w nowym epoch.
+
+`KafkaRaftClient` przekazuje listenerom wyłącznie committed zakres: przy nadrabianiu listenera czyta log z `Isolation.COMMITTED`, a granicą jest High Watermark. Jeżeli potrzebny jest starszy zakres, może najpierw dostarczyć snapshot, a następnie committed rekordy z logu.
+
+To bezpośrednio determinuje odbudowę Metadata Image. `MetadataLoader` czeka, aż High Watermark będzie znany, a następnie aż załadowany offset osiągnie HW-1; dopiero wtedy kończy fazę initial catch-up i inicjalizuje/publikuje metadata publishers. Gdy dostaje snapshot, tworzy `MetadataDelta`, replayuje zawarte w nim rekordy, stosuje delta do image, resetuje batch loader do otrzymanej image i dopiero potem publikuje wynik. Dla kolejnych committed batchy `handleCommit` ładuje kolejne rekordy i aktualizuje image.
+
+`MetadataImage` w Kafka 4.3 obejmuje między innymi `FeaturesImage`, `ClusterImage`, `TopicsImage`, `ConfigurationsImage`, client quotas, producer IDs, ACL, SCRAM i delegation tokens. Zatem utracony committed fragment metadata logu może oznaczać logiczny brak np. topic definition, assignmentu, konfiguracji, ACL lub feature update, mimo tego, że odpowiadające dane topicu nadal fizycznie istnieją na brokerowych dyskach. Jest to wniosek z zakresu MetadataImage i z jawnego rozdzielenia przez Confluent między możliwą utratą metadanych a zachowaniem danych topiców.
+
+`QuorumController` nie przeprowadza samej elekcji Raft. To `KafkaRaftClient`/Raft state machine ustala leadership; aktywny `QuorumController` następnie może generować control-plane records. W kodzie Kafka 4.3 write event jest odrzucany, jeżeli lokalny `QuorumController` nie jest aktywnym kontrolerem, a przy aktywnym kontrolerze wynik operacji jest przekazywany do `raftClient.prepareAppend`. Na ścieżce commit aktywny controller kończy operacje oczekujące na committed/stable offsets, zaś standby replayuje committed metadata, aby utrzymywać swój stan.
+
+To prowadzi do najważniejszej reguły DR: **nie należy wybierać seeda po największym LEO**. Confluent każe wybrać najpierw największy metadata epoch, a LEO użyć tylko jako tie-breaker. Dłuższy log z niższego epoch może należeć do starej, rozbieżnej gałęzi i jego wybór może bezpowrotnie utracić committed metadata.
+
+## Opcje odzyskania i wybór ścieżki
+
+| Opcja | Spójność | RTO | Wymagania | Ocena dla Case A |
+|---|---|---|---|---|
+| Offline rebuild z najlepszego C201/C202 przez force-standalone | Zachowuje najlepszą dostępną kopię DC2, ale nie gwarantuje wszystkich dawnych commitów, bo utracone DC1 miało większość | Najkrótszy realistyczny | Dynamic KRaft, intact seed, recovery tool, Support dla ręcznego bare-metal workflow | Zalecana ścieżka przy założeniu permanentnej utraty DC1 |
+| Odzyskanie choć jednego oryginalnego kontrolera DC1 z jego storage | Najlepsza możliwość odzyskania pełnego committed prefixu i normalnej elekcji 3/5 | Potencjalnie dłuższy | Fizyczny dysk/node DC1 | Najbezpieczniejsze logicznie, ale wykluczone przez założenie „brak DC1 backups/nodes” |
+| CFK `kubectl confluent kraft recover-region` | Ten sam model seed recovery; automatyzuje park/snapshot/rebuild/rejoin | Krótszy i lepiej checkpointowany | CFK i odpowiednia wersja pluginu | Preferowane przez Confluent tylko gdy wdrożenie jest CFK |
+| Edytowanie `controller.quorum.bootstrap.servers` na C201,C202 | Nie rekonstruuje voter setu | Brak rozwiązania | — | Nie jest recovery; bootstrap servers to discovery hints |
+| `kafka-storage format --standalone` na C201/C202 | Może zniszczyć jedyną ocalałą kopię metadata | Pozornie szybki | — | Zakazane jako metoda DR; format służy do bootstrapowania nowych storage, nie odzyskiwania istniejącego |
+| Nowy klaster i ręczne odtworzenie metadata | Nowa tożsamość klastra; wymaga odtworzenia wielu kategorii metadata | Bardzo wysoki | Pełny external inventory i plan migracji danych | Ostateczny last resort, nie „reconstruction of old quorum” |
+
+Przy założeniach użytkownika właściwa ścieżka jest więc:
+
+> C201/C202 offline → DC2 snapshots → porównanie epoch/LEO → najlepszy seed → force-standalone → seed jako jednoelementowy leader → C202 z czystym `__cluster_metadata-0` jako Observer → pełny catch-up → add-controller → jak najszybciej nowy trzeci voter → walidacja metadanych względem zewnętrznego źródła prawdy.
+
+Jest to dokładnie model opublikowany przez Confluent dla quorum-loss recovery.
+
+## Szczegółowy runbook odzyskania
+
+Poniższe polecenia używają nazw wrapperów występujących we współczesnej dystrybucji Confluent (`bin/kafka-metadata-quorum`, `bin/kafka-storage`, `bin/kafka-metadata-shell`). Dokumentacja Apache często pokazuje równoważne nazwy z końcówką `.sh`. Dokładny `$CONFLUENT_HOME`, ścieżka properties, porty, security properties i nazwa usługi są nieokreślone.
+
+Przyjmijmy zmienne środowiskowe:
+
+```bash
+export CONFLUENT_HOME=/opt/confluent
+
+# NIE zakładaj, że nazwa C201 oznacza node.id=201.
+export C201_CTRL='<c201-fqdn>:<controller-port>'
+export C202_CTRL='<c202-fqdn>:<controller-port>'
+
+# Lokalny katalog root zawierający meta.properties i __cluster_metadata-0.
+export MDIR='<metadata.log.dir>'
+
+# Client/security properties używane przez narzędzia administracyjne.
+export ADMIN_CFG='<path-to-kafka-client.properties>'
+
+# Server properties każdego controllera.
+export CONTROLLER_CFG='<path-to-controller.properties>'
+
+# Nazwa systemd jest środowiskowa i nie została podana.
+export KAFKA_UNIT='<KAFKA_CONTROLLER_UNIT>'
+```
+
+### Krok A — zamrożenie sytuacji i zakaz startu utraconych C101–C103
+
+Nie wolno dopuścić do przypadkowego ponownego startu starego voter setu podczas recovery. Zatrzymaj C201 i C202 kontrolowanym mechanizmem zarządzania procesem. Confluent w swojej procedurze najpierw „parkuje” wszystkie ocalałe kontrolery, tak aby żaden proces KRaft nie używał metadata logu podczas offline inspection/reconfiguration.
+
+Dla systemd:
+
+```bash
+sudo systemctl stop "$KAFKA_UNIT"
+
+sudo systemctl is-active "$KAFKA_UNIT"
+pgrep -af 'kafka.Kafka|KafkaRaft' || true
+```
+
+`$KAFKA_UNIT` jest nieokreślony; nie należy mechanicznie zakładać nazwy `confluent-kafka`.
+
+### Krok B — potwierdzenie tożsamości klastra i kontrolerów
+
+Na obu ocalałych hostach:
+
+```bash
+grep -E '^(cluster.id|node.id|directory.id)=' \
+  "$MDIR/meta.properties"
+
+grep -E \
+'^(process.roles|node.id|metadata.log.dir|log.dirs|listeners|controller.listener.names|controller.quorum.voters|controller.quorum.bootstrap.servers|controller.quorum.auto.join.enable)=' \
+  "$CONTROLLER_CFG"
+```
+
+`cluster.id` na C201 i C202 musi być ten sam; `node.id` musi odpowiadać odpowiedniej konfiguracji i musi być unikalny. Nie zmieniaj `cluster.id`, `node.id` ani istniejącego `directory.id` seeda w czasie recovery. Nowe kontrolery dodawane później są formatowane przy użyciu tego samego cluster ID. Apache wymaga zachowania jednego cluster ID przy formatowaniu wszystkich członków danego klastra.
+
+**Jeżeli C201 i C202 pokazują różne `cluster.id`, STOP**: przynajmniej jedna kopia nie należy do tego samego klastra albo występuje poważna niespójność operacyjna.
+
+### Krok C — potwierdzenie dynamicznego quorum
+
+Jeżeli dostępna jest stara dokumentacja operacyjna, sprawdź wcześniejszy wynik:
+
+```bash
+$CONFLUENT_HOME/bin/kafka-features.sh \
+  --bootstrap-controller "$C201_CTRL" \
+  describe
+```
+
+W aktualnym outage polecenie może timeoutować. `kraft.version=1` lub wyżej oznacza dynamic, natomiast `0`/brak oznacza static. Dodatkowym sygnałem jest brak `controller.quorum.voters` i obecność `controller.quorum.bootstrap.servers`.
+
+**Jeżeli nie można wiarygodnie potwierdzić dynamicznego quorum, nie wykonuj `force-standalone` według tego runbooka.** Rodzaj quorum jest w założeniach nieokreślony i jest twardą bramką bezpieczeństwa.
+
+### Krok D — wykonanie nowych, lokalnych kopii bezpieczeństwa DC2
+
+Zakaz używania backupów z DC1 nie oznacza, że należy wykonywać nieodwracalne operacje bez snapshotu C201/C202. Confluent przed recovery nakazuje snapshot każdego ocalałego KRaft volume i nazywa go niezawodnym punktem rollback, szczególnie na wypadek wyboru złego seeda.
+
+Preferowany jest snapshot na poziomie storage/VM/LVM/SAN, którego dokładne polecenie jest nieokreślone, ponieważ nie podano platformy. Dodatkowo, przy zatrzymanej Kafka można wykonać kopię plikową na innym filesystemie:
+
+```bash
+export SNAPDIR='<separate-safe-filesystem>/kraft-dr-$(date -u +%Y%m%dT%H%M%SZ)'
+mkdir -p "$SNAPDIR"
+
+tar --numeric-owner --acls --xattrs \
+  -C "$MDIR" \
+  -cpf "$SNAPDIR/kraft-metadata.tar" .
+
+sha256sum "$SNAPDIR/kraft-metadata.tar" \
+  > "$SNAPDIR/kraft-metadata.tar.sha256"
+
+sha256sum -c "$SNAPDIR/kraft-metadata.tar.sha256"
+```
+
+Wykonać osobno na C201 i C202 i opisać artefakty nazwą hosta.
+
+### Krok E — sanity check fizycznego metadata logu
+
+Apache i Confluent dostarczają `kafka-dump-log` do dekodowania segmentów KRaft oraz `kafka-metadata-shell` do oglądania struktury metadata.
+
+Przykład:
+
+```bash
+ls -lah "$MDIR/__cluster_metadata-0"
+
+LATEST_LOG=$(
+  find "$MDIR/__cluster_metadata-0" -maxdepth 1 -type f -name '*.log' \
+  | sort | tail -1
+)
+
+echo "$LATEST_LOG"
+
+$CONFLUENT_HOME/bin/kafka-dump-log \
+  --cluster-metadata-decoder \
+  --files "$LATEST_LOG" \
+  > "/tmp/$(hostname)-latest-kraft-segment.txt"
+```
+
+Jeżeli istnieje snapshot:
+
+```bash
+LATEST_SNAPSHOT=$(
+  find "$MDIR/__cluster_metadata-0" -maxdepth 1 \
+    -type f -name '*.checkpoint' \
+  | sort | tail -1
+)
+
+if [ -n "$LATEST_SNAPSHOT" ]; then
+  $CONFLUENT_HOME/bin/kafka-dump-log \
+    --cluster-metadata-decoder \
+    --files "$LATEST_SNAPSHOT" \
+    > "/tmp/$(hostname)-latest-kraft-snapshot.txt"
+fi
+```
+
+Apache pokazuje dokładnie dekodowanie zarówno `.log`, jak i `<offset>-<epoch>.checkpoint` przez `--cluster-metadata-decoder`.
+
+Interaktywna inspekcja:
+
+```bash
+$CONFLUENT_HOME/bin/kafka-metadata-shell \
+  --directory "$MDIR/__cluster_metadata-0"
+```
+
+Przykładowe komendy w shellu:
+
+```text
+ls /
+ls /topics
+```
+
+Apache pokazuje, że metadata shell udostępnia m.in. `brokers`, `metadataQuorum`, `topicIds` i `topics`.
+
+Corrupt segment, błędy CRC, brak `meta.properties`, niewłaściwy `cluster.id` albo brak całego `__cluster_metadata-0` na jednym z dwóch hostów to przyczyna zatrzymania i analizy przed wyborem seeda.
+
+### Krok F — sprawdzenie recovery utility przed użyciem
+
+Na CP EE 8.3.0:
+
+```bash
+test -x "$CONFLUENT_HOME/bin/kafka-metadata-recovery" \
+  && echo "kafka-metadata-recovery present"
+
+$CONFLUENT_HOME/bin/kafka-metadata-recovery --help
+
+$CONFLUENT_HOME/bin/kafka-metadata-recovery \
+  reconfig log-length --help
+
+$CONFLUENT_HOME/bin/kafka-metadata-recovery \
+  reconfig force-standalone --help
+```
+
+**Jeżeli `reconfig force-standalone` nie istnieje w dokładnie zainstalowanym 8.3.0, STOP.** Nie należy próbować odtworzyć jego działania za pomocą `kafka-storage format`, ręcznej edycji snapshotu ani własnego kodu Java. Publiczny manual recovery Confluent definiuje właśnie `kafka-metadata-recovery reconfig force-standalone` jako nieodwracalny voter-set rebuild i zaleca wykonanie ręcznego wariantu z Support.
+
+### Krok G — offline pomiar epoch i LEO na obu ocalałych kontrolerach
+
+Kafka musi być zatrzymana. Confluent stosuje następujący wzorzec, włącznie z `.lock`:
+
+Na C201:
+
+```bash
+[ -f "$MDIR/.lock" ] || : > "$MDIR/.lock"
+
+$CONFLUENT_HOME/bin/kafka-metadata-recovery \
+  reconfig log-length \
+  --metadata-log-dir "$MDIR"
+```
+
+Na C202 dokładnie to samo:
+
+```bash
+[ -f "$MDIR/.lock" ] || : > "$MDIR/.lock"
+
+$CONFLUENT_HOME/bin/kafka-metadata-recovery \
+  reconfig log-length \
+  --metadata-log-dir "$MDIR"
+```
+
+Zapisz wyniki do protokołu DR:
+
+```text
+C201: epoch = <E201>, LEO = <L201>
+C202: epoch = <E202>, LEO = <L202>
+```
+
+Reguła wyboru jest bezwzględna:
+
+```text
+jeżeli E201 > E202  => seed = C201
+jeżeli E202 > E201  => seed = C202
+jeżeli E201 = E202  => seed = controller z większym LEO
+jeżeli epoch i LEO są równe => oba są równoważnymi kandydatami na podstawie tych dwóch kryteriów
+```
+
+**Nie wybieraj po LEO przed epoch.** Jest to jedna z najważniejszych korekt względem intuicyjnej procedury; Confluent ostrzega przed permanentną utratą metadata przy wybraniu dłuższej, ale starszej gałęzi.
+
+Dalsze przykłady przyjmują C201 jako seed. Jeżeli zwycięży C202, należy symetrycznie zamienić nazwy.
+
+### Krok H — ostatnia bramka przed operacją nieodwracalną
+
+Przed `force-standalone` musi być prawdziwe wszystko poniżej:
+
+```text
+[OK] Kafka na C201 i C202 zatrzymana
+[OK] Cluster ID obu kopii zgodny
+[OK] Dynamic KRaft potwierdzony
+[OK] Recovery tool i force-standalone zweryfikowane lokalnym --help
+[OK] Snapshot C201 i C202 wykonany i zweryfikowany
+[OK] Epoch/LEO obu kontrolerów zapisane
+[OK] Seed wybrany epoch-first, LEO-second
+[OK] Nie planuje się startu C101/C102/C103 ze starym metadata
+[OK] Rozumiane jest ryzyko utraty committed metadata z DC1 majority
+```
+
+Jeżeli którykolwiek punkt jest nieprawdziwy, nie przechodź dalej. Confluent jednoznacznie określa wybór seeda i voter-set rebuild jako nieodwracalne elementy recovery.
+
+### Krok I — force-standalone tylko raz, tylko na seedzie C201
+
+Oficjalna ręczna procedura Confluent ma następującą postać:
+
+```bash
+[ -f "$MDIR/.lock" ] || : > "$MDIR/.lock"
+
+$CONFLUENT_HOME/bin/kafka-metadata-recovery \
+  reconfig force-standalone \
+  --config "$ADMIN_CFG"
+```
+
+W CFK `$ADMIN_CFG` jest plikiem Kafka client properties montowanym przez operatora. Dokładna zawartość/ścieżka odpowiadającego mu pliku w bare-metal EE 8.3.0, w tym TLS/SASL, jest nieokreślona; należy użyć składni zweryfikowanej w lokalnym `--help` i dokumentacji/support dla dokładnie instalowanego pakietu. Nie należy arbitralnie zastępować go `server.properties`, jeśli lokalna wersja narzędzia tego nie oczekuje.
+
+Operacja przepisuje voter set tak, aby seed był jedynym voterem, i robi to w wyższym epoch.
+
+**Po sukcesie nie wykonuj `force-standalone` drugi raz.**
+
+Jeżeli command zawiesi się, zwróci niejednoznaczny status albo zostanie przerwany sygnałem/rebootem, nie powtarzaj go. Confluent ostrzega, że mógł częściowo przepisać voter set, a ponowne wykonanie może uszkodzić metadata state.
+
+### Krok J — konfiguracja dynamicznego discovery seeda
+
+Dla dynamic quorum konfiguracja seeda powinna zachować jego oryginalny `node.id`, listener oraz używać `controller.quorum.bootstrap.servers`, a nie static `controller.quorum.voters`. Confluent zaleca dynamiczną postać:
+
+```properties
+process.roles=controller
+node.id=<EXISTING_NODE_ID_C201>
+
+listeners=CONTROLLER://<c201-fqdn>:<controller-port>
+controller.listener.names=CONTROLLER
+
+controller.quorum.bootstrap.servers=<c201-fqdn>:<controller-port>,<c202-fqdn>:<controller-port>
+
+# MUSI być nieobecne dla dynamic quorum:
+# controller.quorum.voters=...
+```
+
+Lista bootstrap może zawierać również nieosiągalne jeszcze kontrolery, ale po DR warto ją docelowo zaktualizować do rzeczywiście istniejących endpointów. Sama zmiana tej listy nie zmienia voter membership.
+
+`controller.quorum.auto.join.enable` jest w wejściu nieokreślone. Confluent Platform od 8.2 wspiera auto-join nowych dynamic controllers przy `true`; dlatego przed ręcznym `add-controller` zawsze należy sprawdzić `CurrentVoters`, aby nie próbować dodawać kontrolera, który został już automatycznie promowany.
+
+### Krok K — start C201 i wybór jednoelementowego lidera
+
+```bash
+sudo systemctl start "$KAFKA_UNIT"
+sudo systemctl status "$KAFKA_UNIT" --no-pager
+```
+
+Następnie:
+
+```bash
+$CONFLUENT_HOME/bin/kafka-metadata-quorum \
+  --command-config "$ADMIN_CFG" \
+  --bootstrap-controller "$C201_CTRL" \
+  describe --status
+```
+
+Oczekiwany stan:
+
+```text
+ClusterId:       <ten sam co przed DR>
+LeaderId:        <NODE_ID_C201>
+LeaderEpoch:     <nowy epoch>
+HighWatermark:   <wartość >= 0 po ustabilizowaniu>
+CurrentVoters:   [C201]
+CurrentObservers: [...]
+```
+
+Confluent opisuje dokładnie ten efekt: po `force-standalone` seed zostaje uruchomiony i staje się leaderem jednoelementowego quorum. Standardowy `describe --status` pokazuje `ClusterId`, `LeaderId`, `LeaderEpoch`, `HighWatermark`, `CurrentVoters` i `CurrentObservers`.
+
+Nie istnieje oczekiwana uniwersalna wartość liczbowa HW — jest nieokreślona, bo zależy od logu seeda. Po stabilizacji powinien jednak być znany, a nie -1. `HW <= LEO` musi być zachowane; w w pełni dogonionym jednoelementowym quorum HW może dojść do LEO po nowych rekordach z epoch lidera. Mechanika kodu Kafka wymaga wpisu z nowego epoch przed przesunięciem HW.
+
+Sprawdź także:
+
+```bash
+$CONFLUENT_HOME/bin/kafka-metadata-quorum \
+  --command-config "$ADMIN_CFG" \
+  --bootstrap-controller "$C201_CTRL" \
+  describe --replication
+```
+
+oraz feature:
+
+```bash
+$CONFLUENT_HOME/bin/kafka-features.sh \
+  --bootstrap-controller "$C201_CTRL" \
+  --command-config "$ADMIN_CFG" \
+  describe
+```
+
+Oczekiwane `kraft.version >= 1`.
+
+### Krok L — sprawdzenie, czy MetadataLoader ukończył reconstruction
+
+W logach C201 należy szukać dokładnych klas/zdarzeń:
+
+```bash
+sudo journalctl -u "$KAFKA_UNIT" --since '<RECOVERY_START_ISO>' \
+  | grep -Ei \
+  'KafkaRaftClient|MetadataLoader|QuorumController|high.?watermark|leader|voter|snapshot|fatal|error'
+```
+
+Ścieżka logu jest nieokreślona, jeżeli wdrożenie nie używa journald.
+
+`KafkaRaftClient` podczas inicjalizacji loguje odczyt KRaft snapshot/log oraz początkowy voter set. `MetadataLoader` loguje m.in. zakończenie catch-up do bieżącego High Watermark i ładowanie snapshotu; szczegółowe zmiany HW w `KafkaRaftClient` są na poziomie debug.
+
+Dla go-live na seedzie należy zobaczyć logiczną sekwencję:
+
+```text
+KRaft log/snapshot odczytany
+        ↓
+C201 wybrany Leader
+        ↓
+HW staje się znany / przesuwa się
+        ↓
+MetadataLoader ładuje snapshot + committed batches do HW
+        ↓
+Metadata Image jest opublikowana
+        ↓
+QuorumController może działać jako aktywny controller
+```
+
+Jest to ważniejsze niż sam fakt, że proces Java ma status RUNNING.
+
+### Krok M — przygotowanie C202 do rejoinu
+
+C202 nie może zostać uruchomiony ze starą, przed-DR gałęzią `__cluster_metadata-0` i po prostu „dołączyć” jako voter. Oficjalna procedura Confluent usuwa stary metadata partition na non-seed, uruchamia kontroler pusty, pozwala mu pobrać stan od seeda jako Observer i dopiero potem dodaje go jako voter.
+
+Ponieważ zachowaliśmy snapshot, zamiast bezpowrotnego `rm` można dodatkowo przenieść katalog na filesystem poza aktywnym `$MDIR`:
+
+```bash
+# Kafka C202 nadal zatrzymana.
+export HOLD='<separate-safe-filesystem>/c202-pre-rejoin'
+mkdir -p "$HOLD"
+
+mv "$MDIR/__cluster_metadata-0" \
+   "$HOLD/__cluster_metadata-0"
+```
+
+To implementuje logicznie to samo „clear stale metadata” i zachowuje artefakt forensic. W dokumentacji Confluent dla przywracanego regionu wprost mówi się o odsunięciu stale metadata partition, a następnie starcie pustego controllera jako Observer.
+
+**Nie wykonuj na C202 `kafka-storage format --standalone`.**
+
+Sprawdź konfigurację C202:
+
+```properties
+process.roles=controller
+node.id=<EXISTING_NODE_ID_C202>
+
+listeners=CONTROLLER://<c202-fqdn>:<controller-port>
+controller.listener.names=CONTROLLER
+
+controller.quorum.bootstrap.servers=<c201-fqdn>:<controller-port>,<c202-fqdn>:<controller-port>
+
+# dynamic quorum:
+# brak controller.quorum.voters
+```
+
+Dynamiczne kontrolery używają `controller.quorum.bootstrap.servers`; lista nie musi być dokładnym odwzorowaniem voter setu.
+
+### Krok N — start C202 jako Observer i pełny catch-up
+
+```bash
+sudo systemctl start "$KAFKA_UNIT"
+```
+
+Na C201:
+
+```bash
+$CONFLUENT_HOME/bin/kafka-metadata-quorum \
+  --command-config "$ADMIN_CFG" \
+  --bootstrap-controller "$C201_CTRL" \
+  describe --status
+```
+
+Oczekuj C202 w `CurrentObservers`, jeżeli nie został auto-joined:
+
+```text
+CurrentVoters:
+  C201
+
+CurrentObservers:
+  ...
+  C202
+```
+
+Następnie:
+
+```bash
+$CONFLUENT_HOME/bin/kafka-metadata-quorum \
+  --command-config "$ADMIN_CFG" \
+  --bootstrap-controller "$C201_CTRL" \
+  describe --replication
+```
+
+Apache i Confluent wymagają właśnie uruchomienia nowego controllera, monitorowania `describe --replication`, a dopiero po dogonieniu aktywnego kontrolera wykonania `add-controller`.
+
+Warunek promocji:
+
+```text
+C202 LogEndOffset == leader LogEndOffset
+C202 Lag == 0
+C202 regularnie fetchuje z lidera
+C202 nie zgłasza snapshot/CRC/storage errors
+```
+
+Nie promuj kontrolera, który pozostaje w tyle.
+
+### Krok O — dodanie C202 jako voter
+
+Najpierw jeszcze raz sprawdź `CurrentVoters`. Jeżeli C202 jest już voterem — na przykład przez `controller.quorum.auto.join.enable=true` — pomiń command.
+
+W manualnym workflow Confluent wykonuje `add-controller` z procesu/środowiska non-seed controllera:
+
+```bash
+$CONFLUENT_HOME/bin/kafka-metadata-quorum \
+  --command-config "$ADMIN_CFG" \
+  --bootstrap-controller "$C201_CTRL" \
+  add-controller
+```
+
+Apache Kafka 4.3 oraz Confluent Platform podają ten sam command shape dla controller endpoint.
+
+Natychmiast zweryfikuj:
+
+```bash
+$CONFLUENT_HOME/bin/kafka-metadata-quorum \
+  --command-config "$ADMIN_CFG" \
+  --bootstrap-controller "$C201_CTRL" \
+  describe --status
+```
+
+Oczekiwany etap:
+
+```text
+CurrentVoters = [C201, C202]
+LeaderId      = C201 lub, po późniejszej elekcji, dowolny aktualny voter
+majority      = 2
+tolerancja na utratę voterów = 0
+```
+
+Nie należy uznawać tego za docelowy HA state.
+
+### Krok P — dodanie nowego trzeciego controllera
+
+`<C203>` jest nazwą symboliczną; host, `node.id`, listener, katalog i placement są nieokreślone.
+
+Przykładowy controller config:
+
+```properties
+process.roles=controller
+node.id=<NEW_UNIQUE_NODE_ID>
+
+listeners=CONTROLLER://<c203-fqdn>:<controller-port>
+controller.listener.names=CONTROLLER
+
+controller.quorum.bootstrap.servers=<c201-fqdn>:<controller-port>,<c202-fqdn>:<controller-port>
+```
+
+Odczytaj zachowany cluster ID, na przykład z C201:
+
+```bash
+CLUSTER_ID=$(
+  awk -F= '$1 == "cluster.id" {print $2}' \
+  "$MDIR/meta.properties"
+)
+
+printf '%s\n' "$CLUSTER_ID"
+```
+
+Świeży controller, dodawany do istniejącego dynamicznego klastra, formatuje się przez `--no-initial-controllers`:
+
+```bash
+$CONFLUENT_HOME/bin/kafka-storage \
+  format \
+  --cluster-id "$CLUSTER_ID" \
+  --config /etc/kafka/controller-c203.properties \
+  --no-initial-controllers
+```
+
+Uruchom C203, a potem:
+
+```bash
+$CONFLUENT_HOME/bin/kafka-metadata-quorum \
+  --command-config "$ADMIN_CFG" \
+  --bootstrap-controller "$C201_CTRL" \
+  describe --replication
+```
+
+Po `Lag=0`:
+
+```bash
+$CONFLUENT_HOME/bin/kafka-metadata-quorum \
+  --command-config "$ADMIN_CFG" \
+  --bootstrap-controller "$C201_CTRL" \
+  add-controller
+```
+
+Ponownie, jeżeli `controller.quorum.auto.join.enable=true` i C203 już pojawił się jako voter, `add-controller` należy pominąć. Confluent od CP 8.2 obsługuje auto-join jako alternatywny sposób budowania dynamicznego voter setu.
+
+Po trzecim voterze:
+
+```text
+CurrentVoters = [C201, C202, C203]
+majority = 2
+tolerancja = 1 controller
+```
+
+Dopiero taki stan przywraca podstawową tolerancję jednej awarii controllera.
+
+### Krok Q — aktualizacja bootstrap hints na brokerach i kontrolerach
+
+Dla dynamic quorum Confluent wymaga, aby wszystkie nody używały `controller.quorum.bootstrap.servers` zamiast `controller.quorum.voters`. Lista nie musi zawierać dokładnie wszystkich voterów, ale powinna zapewniać możliwość odnalezienia quorum.
+
+Docelowo:
+
+```properties
+controller.quorum.bootstrap.servers=<c201>:9093,<c202>:9093,<c203>:9093
+```
+
+Port 9093 jest tylko przykładowy; właściwy port jest nieokreślony.
+
+Jeżeli w broker configs nadal występuje:
+
+```properties
+controller.quorum.bootstrap.servers=C101:...,C102:...,C103:...,C201:...,C202:...
+```
+
+i C201/C202 są osiągalne, sam fakt obecności martwych bootstrap hints nie oznacza starego voter membership. Mimo to należy docelowo zastąpić je żywymi endpointami, a przy konieczności restartu brokerów robić rolling restart dopiero po ustabilizowaniu kontrolerów. Confluent dla zmian dynamic configuration zaleca najpierw zdrowe kontrolery, potem restarty brokerów po kolei.
+
+### Krok R — nie przywracaj później starych C101/C102/C103 ze stale metadata
+
+Gdy DC1 kiedyś zostanie odbudowane, żadnego starego `__cluster_metadata-0` z pre-DR voter setem nie wolno po prostu uruchamiać obok odzyskanego quorum. Confluent każe takie metadata najpierw odsunąć, uruchomić controller pusty jako Observer, zsynchronizować z odzyskanym liderem i dopiero później dodać jako voter.
+
+W Case A starych kopii DC1 zgodnie z założeniem nie ma, więc nowe nody DC1 należy traktować jako fresh controllers do istniejącego cluster ID, nie jako źródło dawnych metadata.
+
+## Przejścia stanu i współpraca komponentów
+
+Poniższy diagram pokazuje logiczną zmianę quorum. Kluczowe punkty — rebuild do jednego seeda, Observer przed promotion oraz ponowne dodawanie voterów — odpowiadają oficjalnemu workflow Confluent.
+
+**Diagram 1 — przejścia stanu quorum**
+
+```text
+Healthy5 [5 voters, majority=3]
+   │  utrata C101, C102, C103
+   ▼
+QuorumLost [C201 + C202 = 2/5, brak większości, brak legalnego leadera]
+   │  stop C201 i C202
+   ▼
+Frozen
+   │  snapshot + epoch/LEO
+   ▼
+SeedSelected
+   │  force-standalone na najlepszym seedzie
+   ▼
+Reconfigured
+   │  start seeda
+   ▼
+SingleLeader [CurrentVoters = [seed], nowy epoch,
+              KafkaRaftClient wybiera leadera, HW staje się znany,
+              MetadataLoader rekonstruuje image]
+   │  C202 startuje bez stale metadata
+   ▼
+ObserverSync
+   │  Lag=0 + add-controller
+   ▼
+TwoVoters [majority = 2, zero tolerancji na utratę voterów]
+   │  provision C203 + sync + add
+   ▼
+ThreeVoters [majority = 2, tolerancja jednej awarii]
+```
+
+Warto zwrócić uwagę na zmianę znaczenia High Watermark pomiędzy etapami. Przed DR C201/C202 mogą mieć lokalny HW wynikający z dawnych commitów; po nowej elekcji seeda w pojedynczym voter set `KafkaRaftClient` tworzy nowy leader epoch i zapisuje start-of-epoch control records, umożliwiając dalsze przesuwanie HW. Listenerzy otrzymują tylko dane poniżej HW z `Isolation.COMMITTED`.
+
+Sekwencja wewnętrzna wygląda następująco (uczestnicy: Operator, C201 seed, KafkaRaftClient, MetadataLoader, QuorumController, C202, Brokers):
+
+**Diagram 2 — sekwencja wewnętrzna recovery**
+
+```text
+ 1. Operator      → C201 seed        : stop KRaft
+ 2. Operator      → C201 seed        : snapshot metadata
+ 3. Operator      → C201 seed / C202 : log-length -> epoch, LEO
+ 4. Operator      → C201 seed        : force-standalone
+ 5. Operator      → C201 seed        : start
+ 6. C201 seed     → KafkaRaftClient  : initialize snapshot + raft log
+ 7. KafkaRaftClient                  : Candidate -> Leader
+ 8. KafkaRaftClient                  : append start-of-epoch control record
+ 9. KafkaRaftClient                  : establish/advance High Watermark
+10. KafkaRaftClient → MetadataLoader : snapshot + committed records up to HW
+11. MetadataLoader                   : rebuild MetadataImage
+12. MetadataLoader → QuorumController: published committed metadata
+13. QuorumController                 : active controller state available
+14. Operator      → C202             : move stale __cluster_metadata-0 aside
+15. Operator      → C202             : start controller
+16. C202          → C201 seed        : discover recovered quorum
+17. C201 seed     → C202             : snapshot / committed raft records
+18. C202                             : Observer catches up
+19. Operator      → C201 seed        : add-controller C202
+20. KafkaRaftClient                  : commit voter-set change (voters = C201, C202)
+21. Brokers       → C201 seed        : reconnect / register / control-plane RPCs
+22. C201 seed     → Brokers          : recovered MetadataImage / control decisions
+```
+
+Kod Kafka 4.3 potwierdza, że przy inicjalizacji `KafkaRaftClient` czyta KRaft snapshot i log, a potem ustala aktualny voter state. Po leadership zapisuje rekord start-of-epoch przed dalszym postępem HW.
+
+`MetadataLoader` z kolei nie publikuje inicjalnego obrazu, dopóki High Watermark jest nieznany lub loader nie doszedł do HW-1; snapshot jest replayowany do `MetadataDelta`, a wynik staje się nową `MetadataImage`.
+
+W praktyce oczekiwane stany operacyjne są następujące:
+
+| Etap | Voter set | C201 | C202 | Leader | Metadata Image |
+|---|---|---|---|---|---|
+| Przed awarią | C101, C102, C103, C201, C202 | voter | voter | któryś z 5, nieokreślony | normalna |
+| Po utracie DC1 | nadal starych 5 | bez quorum | bez quorum | brak legalnej nowej większości | lokalny stan może istnieć, ale control-plane nie ma zdrowego leadera |
+| Po offline force-standalone | on-disk recovery voter set = seed | stopped | stopped | brak do startu | jeszcze niepublikowana po restarcie |
+| Po starcie C201 | C201 | leader | stopped | C201 | snapshot + committed log do nowego HW |
+| Po starcie czystego C202 | C201 | leader | observer | C201 | C202 rekonstruuje kopię z leadera |
+| Po add-controller | C201, C202 | voter | voter | aktualnie C201, później może się zmienić | zsynchronizowana |
+| Po C203 | C201, C202, C203 | voter | voter | dowolny wybrany voter | HA kopie na 3 controllerach |
+
+Nie należy oczekiwać, że `QuorumController` „odtworzy brakujące wpisy” przez analizę broker data. Jego operacje są oparte na odtworzonym metadata state i rekordach Raft; logiczna zawartość `MetadataImage` pochodzi ze snapshotów i committed metadata records.
+
+## Failure modes, rollback, kontrole spójności i weryfikacja końcowa
+
+Najważniejszą zasadą rollbacku jest rozróżnienie stanu przed i po `force-standalone`. Przed voter-set rewrite można wrócić do lokalnych kopii C201/C202, ale odzyskuje się jedynie stary stan 2/5, nadal bez quorum. Po udanym `force-standalone` poprawną strategią operacyjną jest zasadniczo roll forward na tym samym seedzie. Confluent ostrzega wprost, aby nie zmieniać seeda w środku recovery i nigdy nie powtarzać niepewnego `force-standalone`.
+
+| Failure | Działanie | Rollback / dalsza ścieżka |
+|---|---|---|
+| `log-length` fails | Napraw dostęp/lock/storage i uruchom ponownie | Confluent określa `log-length` jako idempotent |
+| C201/C202 mają różny cluster ID | STOP | Nie wykonuj merge ani force. Ustal prawidłowy storage |
+| Seed ma niższy epoch, choć większy LEO | Nie wybierać go | Wybierz wyższy epoch |
+| Nie można potwierdzić dynamic KRaft | STOP | Support; nie używać dynamic add-controller workflow |
+| `force-standalone` nie istnieje w CP 8.3.0 binary | STOP | Support; nie zastępować `kafka-storage format` |
+| `force-standalone` fail/interrupted | Nie powtarzać | Zachować oba snapshoty, logi i rezultat; Confluent Support |
+| `force-standalone` succeeded, C201 nie startuje | Nie przełączać się automatycznie na C202 | Zachować C201 jako authoritative seed po rewrite; diagnozować storage/config/security |
+| C201 startuje, LeaderId=-1 | Nie przechodzić dalej | Sprawdzić voter rewrite, listener, node ID, logi, feature level |
+| C201 leader, ale HW=-1 długo po stabilizacji | Nie przywracać pełnego ruchu | Zbadać Raft state/log; -1 oznacza unknown HW |
+| C202 nie pojawia się jako Observer | Nie wykonywać add-controller | Sprawdzić bootstrap, listener, TLS/SASL, cluster ID i czy stale metadata rzeczywiście odsunięto |
+| C202 ma Lag > 0 | Czekać/naprawić replication | Apache wymaga catch-up przed promotion |
+| `add-controller` zwróci niejednoznaczny wynik | Najpierw `describe --status` | Jeżeli C202 już jest w `CurrentVoters`, nie powtarzać bez potrzeby. Pozostałe etapy poza `force-standalone` Confluent uważa za bezpieczne do wznowienia |
+| Po DR brakuje topic/config/ACL | Wstrzymać administracyjne mutacje i rozpocząć reconciliation | Brakujące DC1-only committed records nie dają się odzyskać z C201/C202, jeżeli tam nigdy nie istniały |
+
+### Weryfikacja Raft/quorum
+
+Podstawowym go/no-go jest:
+
+```bash
+$CONFLUENT_HOME/bin/kafka-metadata-quorum \
+  --command-config "$ADMIN_CFG" \
+  --bootstrap-controller "$C201_CTRL" \
+  describe --status
+```
+
+Dla docelowego trzy-voterowego quorum oczekuj:
+
+```text
+ClusterId:       dokładnie oryginalny cluster ID
+LeaderId:        jeden z aktualnych voterów
+LeaderEpoch:     dodatni / po recovery większy niż dawny recovery epoch
+HighWatermark:   znany, nie -1
+MaxFollowerLag:  0 po ustabilizowaniu
+CurrentVoters:   C201, C202, C203
+```
+
+Dokładny format nowoczesnego outputu, w tym `directoryId` i controller endpoints, dokumentuje Apache Kafka 4.3.
+
+Następnie:
+
+```bash
+$CONFLUENT_HOME/bin/kafka-metadata-quorum \
+  --command-config "$ADMIN_CFG" \
+  --bootstrap-controller "$C201_CTRL" \
+  describe --replication
+```
+
+W stanie ustabilizowanym każdy voter powinien być dogoniony; przed promocją C202/C203 wymagany jest szczególnie `Lag=0`.
+
+### Weryfikacja feature level
+
+```bash
+$CONFLUENT_HOME/bin/kafka-features.sh \
+  --bootstrap-controller "$C201_CTRL" \
+  --command-config "$ADMIN_CFG" \
+  describe
+```
+
+W ścieżce dynamicznej:
+
+```text
+Feature: kraft.version ... FinalizedVersionLevel: 1
+```
+
+lub wyższy poziom w przyszłych wersjach; dla CP/Kafka 4.3 publiczna dokumentacja opisuje dynamic quorum na level 1.
+
+### Weryfikacja JMX
+
+Na każdym controllerze należy monitorować co najmniej poniższe MBeans/attributes:
+
+```text
+kafka.server:type=raft-metrics
+  current-state
+  current-leader
+  current-epoch
+  high-watermark
+  log-end-offset
+  commit-latency-avg
+  commit-latency-max
+
+kafka.server:type=MetadataLoader,name=CurrentMetadataVersion
+kafka.server:type=MetadataLoader,name=HandleLoadSnapshotCount
+
+kafka.server:type=SnapshotEmitter,name=LatestSnapshotGeneratedBytes
+kafka.server:type=SnapshotEmitter,name=LatestSnapshotGeneratedAgeMs
+```
+
+Confluent publikuje dokładnie te metryki dla KRaft. Transport JMX, exporter, port i sposób odczytu w tym środowisku są nieokreślone.
+
+Po recovery C201 powinien kolejno pokazać `current-state=leader`; C202 podczas sync — `observer`, a po promotion rolę `voter` zależną od bieżącego Raft state; `current-leader` powinien być znany, a `high-watermark` nie powinien pozostawać -1.
+
+### Weryfikacja Metadata Image przez logi
+
+Szukaj:
+
+```bash
+sudo journalctl -u "$KAFKA_UNIT" --since '<RECOVERY_START_ISO>' \
+  | grep -E \
+  'Reading KRaft snapshot and log|Starting voters|MetadataLoader|handleLoadSnapshot|finished catching up|HighWatermark|high watermark|ERROR|FATAL'
+```
+
+W źródle Kafka 4.3 `KafkaRaftClient` loguje inicjalny odczyt KRaft snapshot/log i voter set, a `MetadataLoader` loguje zakończenie initial catch-up do HW oraz `handleLoadSnapshot`.
+
+### Weryfikacja logicznych metadanych przez broker endpoint
+
+Gdy broker control-plane ponownie działa, warto wykonać eksport inventory:
+
+```bash
+export BROKER='<surviving-broker>:<broker-port>'
+```
+
+Topiki:
+
+```bash
+$CONFLUENT_HOME/bin/kafka-topics \
+  --bootstrap-server "$BROKER" \
+  --command-config "$ADMIN_CFG" \
+  --list \
+  | sort \
+  > /tmp/post-dr-topics.txt
+```
+
+Opis partycji:
+
+```bash
+$CONFLUENT_HOME/bin/kafka-topics \
+  --bootstrap-server "$BROKER" \
+  --command-config "$ADMIN_CFG" \
+  --describe \
+  > /tmp/post-dr-topic-describe.txt
+```
+
+ACL:
+
+```bash
+$CONFLUENT_HOME/bin/kafka-acls \
+  --bootstrap-server "$BROKER" \
+  --command-config "$ADMIN_CFG" \
+  --list \
+  > /tmp/post-dr-acls.txt
+```
+
+Konfiguracje topiców:
+
+```bash
+$CONFLUENT_HOME/bin/kafka-configs \
+  --bootstrap-server "$BROKER" \
+  --command-config "$ADMIN_CFG" \
+  --entity-type topics \
+  --describe \
+  > /tmp/post-dr-topic-configs.txt
+```
+
+Taka kontrola jest szczególnie istotna, ponieważ `MetadataImage` obejmuje właśnie topic/cluster/config/ACL/SCRAM/quotas i inne kategorie, a niektóre committed records mogły znajdować się wyłącznie w utraconej większości DC1.
+
+Wyniki należy porównać z zewnętrznym źródłem prawdy: Terraform/Ansible, CMDB, GitOps, aplikacyjnym katalogiem topiców, eksportami ACL, wcześniejszym monitoringiem lub innym inventory. Istnienie i kompletność takiego źródła są w pytaniu nieokreślone. Bez DC1 i bez external baseline nie można kryptograficznie ani logicznie udowodnić, że ostatni globalnie committed metadata offset równał się temu, który posiadał wybrany seed.
+
+Kontrola danych brokerowych musi być traktowana oddzielnie od kontroli metadanych. Confluent zaznacza, że po DR brokerowe topic data mogą pozostać zachowane i brokerzy mogą ponownie podłączyć swoje log volumes, mimo możliwości utraty niektórych control-plane metadata. Jeżeli więc po recovery znajdzie się broker directory z segmentami topicu, którego nie ma już w `MetadataImage`, nie wolno „naprawiać” sytuacji przez ręczne dodanie jego segmentów do metadata logu. Potrzebna jest osobna analiza topic ID, assignmentów, konfiguracji i external inventory.
+
+Control Center nie powinien być używany jako narzędzie do rekonstrukcji voter setu. W oficjalnym workflow quorum-loss Confluent operacje naprawcze są wykonywane przez `kafka-metadata-recovery`, `kafka-metadata-quorum` lub CFK plugin; Control Center może być użyte po odzyskaniu control-plane do obserwacji stanu klastra, ale publiczna procedura DR nie definiuje w nim operacji równoważnej `force-standalone`.
+
+### Kryterium finalnego GO
+
+Powinno wymagać jednocześnie:
+
+```text
+Cluster ID = oryginalny
+dynamic kraft.version potwierdzony
+dokładnie jeden aktualny leader
+HighWatermark znany
+HW <= LEO na wszystkich controllerach
+lag voterów = 0
+co najmniej 3 votery, jeżeli dostępna jest infrastruktura C203
+MetadataLoader ukończył catch-up
+brak FATAL / corruption / repeated election loop
+topics/configs/ACL zgodne z dostępnym external inventory
+brokerzy rejestrują się przy odzyskanym controllerze
+krytyczne partycje są dostępne
+snapshoty pre-DR C201/C202 nadal zachowane
+```
+
+Snapshotów C201/C202 nie należy usuwać zaraz po pierwszym zielonym `describe --status`. Confluent zaleca usuwanie recovery artifacts dopiero po potwierdzeniu zdrowia pełnego quorum.
+
+### Trwałe ryzyko
+
+Najpoważniejszym trwałym ryzykiem tego Case A pozostaje niewykonalność dowodu RPO=0. Ponieważ DC1 miało 3/5 i zostało utracone bez backupów, dowolny committed metadata record zatwierdzony przez C101+C102+C103, ale niewysłany jeszcze do C201/C202, z definicji nie jest dostępny dla recovery. Confluent dokumentuje dokładnie ten problem dla utraconego regionu posiadającego większość.
+
+Z perspektywy przyszłego DR sama topologia „3 votery w DC1 + 2 w DC2” nie może tolerować całkowitej utraty DC1, ponieważ utrata DC1 usuwa jednocześnie większość. Przy pięciu voterach układ trzech failure domains, np. 2+2+1, pozwala po utracie dowolnego pojedynczego domain zachować przynajmniej trzy głosy; konkretna przyszła architektura, liczba DC i wymagania latencji są jednak poza podanymi założeniami.
+
+## Oficjalne źródła kluczowe dla runbooka
+
+- Confluent Platform — Supported Versions and Interoperability — CP 8.3.x ↔ Kafka 4.3.x.
+- Confluent Platform — Configure and Monitor KRaft — dynamic/static quorum, konfiguracja, `kafka-metadata-quorum`, monitoring, metadata tools.
+- Apache Kafka 4.3 — KRaft — provisioning, dynamic controller membership, `add-controller`, `remove-controller`, metadata quorum/debug tools.
+- Confluent — Recover a Multi-Region KRaft Cluster from Quorum Loss — oficjalny seed-selection algorithm, `log-length`, `force-standalone`, Observer→Voter, rollback warnings i przypadek utraty regionu z większością.
+- Confluent — `kubectl confluent kraft recover-region` — opis semantyki `force-standalone`: voter set do pojedynczego seeda w wyższym epoch oraz ponowne dołączanie non-seedów.
+- Apache Kafka 4.3 source — `KafkaRaftClient`, `MetadataLoader`, `QuorumController` i `MetadataImage` — zachowanie HW, committed reads, reconstruction Metadata Image i relacja Raft→aktywny controller.
