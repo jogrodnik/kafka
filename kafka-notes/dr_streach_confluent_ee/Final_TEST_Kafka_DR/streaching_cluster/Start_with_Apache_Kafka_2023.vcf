@@ -1,0 +1,10 @@
+BEGIN:VCARD
+VERSION;TYPE=WORK:3.0
+PROFILE:VCARD
+URL;VALUE=URI:https://softwaremill.com/
+N;CHARSET=UTF-8:Jan Zborowski;;;;
+FN;CHARSET=UTF-8:Jan Zborowski
+ORG;CHARSET=UTF-8:SoftwareMill
+EMAIL:info@softwaremill.pl
+ADR;CHARSET=UTF-8:;;ul. Na Uboczu 8/87,Ursynow;Warsaw;;02-791;Poland
+END:VCARD
