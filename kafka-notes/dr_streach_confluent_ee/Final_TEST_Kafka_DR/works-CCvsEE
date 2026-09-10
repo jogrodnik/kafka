@@ -1,0 +1,58 @@
+Czy potrzebujesz EE?
+
+Moja odpowiedź dla Twojego przypadku jest:
+
+Nie — jeśli wymaganiem jest tylko:
+
+"We must never lose acknowledged Kafka records."
+
+Wtedy Community + dobrze zaprojektowany stretched cluster może wystarczyć:
+
+RF=4
+2+2 actual placement
+minISR=3
+acks=all
+unclean.leader.election.enable=false
+monitoring
+manual DR runbook
+
+Community może zapewnić:
+
+RPO=0
+
+ale podczas poważnego DR najprawdopodobniej:
+
+RTO > 0
+
+bo będziesz wykonywał manualne działania.
+
+Tak — EE ma bardzo mocne uzasadnienie, jeśli wymaganiem jest:
+
+RPO=0
++
+RTO close to 0
++
+automatic failover
++
+deterministic DC placement
+
+Wtedy płacisz głównie za:
+
+Replica Placement Constraints
+Observers
+Automatic Observer Promotion
+MRC operational controls
+deterministic internal-topic placement
+lower manual DR complexity
+
+Confluent sam opisuje 2.5-DC stretched cluster jako architekturę dla scenariuszy, gdzie „extremely high availability is paramount”, z RPO=0 i RTO near-zero, przy odpowiedniej synchronicznej konfiguracji i Automatic Observer Promotion.
+
+Dla architekta sprowadziłbym decyzję do jednego zdania
+Community Kafka can protect the data.
+Confluent EE MRC protects the operating model around the data.
+
+Albo precyzyjniej:
+
+Confluent EE is not mandatory to achieve broker-level RPO=0. It becomes valuable when the requirement expands from zero data loss to deterministic placement, automatic degraded-state recovery, and near-zero operational RTO across datacenter failures.
+
+W Twoim przypadku, jeśli naprawdę budujesz 2 pełne DC + trzeci lightweight controller site, ja nie uzasadniałbym zakupu EE samym RPO=0. Uzasadniałbym go dopiero wymaganiem RPO=0 + near-zero RTO + automatyczny DR bez ręcznego przestawiania minISR/reassignmentów.
