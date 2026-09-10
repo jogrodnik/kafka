@@ -1,0 +1,1244 @@
+Dla Confluent Platform EE 8.3.0, przyjmując 2 DC / 5 brokerów:
+
+DC1                         DC2
+------------------          ------------------
+B101   broker.rack=DC1      B201   broker.rack=DC2
+B102   broker.rack=DC1      B202   broker.rack=DC2
+B103   broker.rack=DC1
+
+najbardziej sensowną konfiguracją pod maksymalną ochronę danych jest RF=4 w układzie 2+2, a nie zwykłe automatyczne replication.factor=4. W Confluent EE użyłbym Multi-Region Cluster + Replica Placement Constraints, żeby deterministycznie wymusić dwie synchroniczne kopie w każdym DC. Confluent wprost wskazuje, że replica placement jest kluczowy dla MRC i powinien być zastosowany również do topiców wewnętrznych.
+
+1. Broker configuration
+
+Na brokerach DC1:
+
+broker.rack=DC1
+
+replica.selector.class=org.apache.kafka.common.replica.RackAwareReplicaSelector
+
+Na brokerach DC2:
+
+broker.rack=DC2
+
+replica.selector.class=org.apache.kafka.common.replica.RackAwareReplicaSelector
+
+broker.rack jest fundamentem MRC, replica placement i follower fetching.
+
+Dla producerów/consumerów możesz dodatkowo używać:
+
+client.rack=DC1
+
+lub:
+
+client.rack=DC2
+
+Consumer może wtedy czytać z lokalnej repliki zamiast generować ruch między DC. To poprawia latency, ale nie jest elementem zapewniającym RPO=0.
+
+2. Najważniejsze: Replica Placement 2+2
+
+Dla Twojego przypadku zrobiłbym:
+
+{
+  "version": 2,
+  "replicas": [
+    {
+      "count": 2,
+      "constraints": {
+        "rack": "DC1"
+      }
+    },
+    {
+      "count": 2,
+      "constraints": {
+        "rack": "DC2"
+      }
+    }
+  ]
+}
+
+Czyli każda partycja:
+
+Partition P0
+
+DC1                DC2
+----                ----
+B101  replica       B201 replica
+B102  replica       B202 replica
+
+ISR normalnie = 4
+
+Przykładowo:
+
+Leader: B101
+
+ISR:
+B101  DC1
+B102  DC1
+B201  DC2
+B202  DC2
+
+To jest znacznie lepsze od pozostawienia zwykłego rack-aware placement Kafka, bo masz jawnie zagwarantowane 2+2. Replica Placement Constraints są jedną z podstawowych funkcji Confluent MRC.
+
+3. acks=all — absolutnie wymagane
+
+Producer:
+
+acks=all
+enable.idempotence=true
+retries=2147483647
+max.in.flight.requests.per.connection=5
+
+Przy:
+
+ISR = B101,B102,B201,B202
+
+acks=all oznacza, że leader nie potwierdzi rekordu producerowi, dopóki wszystkie aktualne ISR nie potwierdzą zapisu. Jest to najsilniejsza dostępna gwarancja Kafka. Idempotence wymaga acks=all, retry > 0 i max-in-flight ≤ 5.
+
+W normalnym stanie:
+
+Producer
+   |
+   v
+B101 Leader DC1
+   |
+   +------ B102 DC1
+   |
+   +================ B201 DC2
+   |
+   +================ B202 DC2
+                     |
+                  ACK
+
+Dopiero wtedy:
+
+Producer <-- SUCCESS
+
+To właśnie daje Ci podstawę do RPO=0 dla potwierdzonych rekordów, dopóki obydwa DC mają repliki w ISR.
+
+4. min.insync.replicas — tutaj jest najważniejszy kompromis
+
+Dla RF=4 masz dwie interesujące możliwości.
+
+Wariant A — bezpieczeństwo przede wszystkim
+replication.factor=4
+min.insync.replicas=3
+
+plus:
+
+acks=all
+
+Normalnie:
+
+ISR = 4
+ACK = 4 replicas
+
+Jeżeli stracisz DC1:
+
+DC1 DOWN
+
+B101 X
+B102 X
+
+DC2:
+B201 OK
+B202 OK
+
+ISR = 2
+minISR = 3
+
+Kafka:
+
+WRITE = BLOCKED
+
+I to jest dobra rzecz dla RPO=0.
+
+Nie pozwalasz klastrowi zacząć potwierdzać rekordów wyłącznie w jednym DC.
+
+Confluent definiuje min.insync.replicas właśnie jako minimalną liczbę ISR wymaganą do zaakceptowania zapisu przy acks=all.
+
+Ale oznacza to:
+
+RPO = 0      bardzo mocne
+RTO = 0      NIE
+
+bo po utracie całego DC zostają tylko dwie repliki.
+
+5. Dlaczego minISR=2 jest kuszące, ale nie daje twardego RPO=0
+
+Możesz ustawić:
+
+RF=4
+minISR=2
+acks=all
+
+Wtedy po awarii DC1:
+
+ISR:
+B201
+B202
+
+ISR=2
+minISR=2
+
+i produkcja może kontynuować.
+
+To daje:
+
+RTO ≈ kilka sekund
+
+ale pojawia się subtelny problem.
+
+Załóżmy, że przed katastrofą DC1 połączenie między DC zaczyna mieć problemy:
+
+DC1                     DC2
+B101 Leader             B201 replica -> out of ISR
+B102 replica             B202 replica -> out of ISR
+
+pozostaje:
+
+ISR = B101,B102
+
+Ponieważ:
+
+ISR=2
+minISR=2
+acks=all
+
+Kafka nadal może potwierdzać nowe rekordy.
+
+Jeżeli teraz utracisz DC1:
+
+B101 X
+B102 X
+
+DC2 nie posiada ostatnich ACKowanych rekordów.
+
+Czyli:
+
+RPO > 0
+
+Dlatego samo:
+
+RF=4
+minISR=2
+acks=all
+
+nie jest twardą gwarancją site-level RPO=0.
+
+6. To jest fundamentalna granica Twojego 3+2
+
+Masz:
+
+DC1 = 3 brokers
+DC2 = 2 brokers
+
+Nie da się matematycznie ustawić minISR, które jednocześnie zapewni:
+
+1. zapis tylko gdy oba DC mają aktualną kopię
+2. zapis po całkowitej utracie DC1
+3. zapis po całkowitej utracie DC2
+
+Dla:
+
+RF=4 = 2+2
+
+musiałbyś mieć:
+
+minISR >= 3
+
+żeby zapobiec pracy tylko na jednym DC.
+
+Ale wtedy po awarii dowolnego DC:
+
+ISR=2 < minISR=3
+
+i zapis staje.
+
+To jest podstawowy kompromis:
+
+           Consistency / RPO=0
+                  ^
+                  |
+                  |
+                  |
+Availability -----+-------> RTO≈0
+
+Nie jest to wada Confluent — to konsekwencja dwóch failure domains.
+
+7. Co wnosi Confluent EE: Observers
+
+Tutaj Confluent EE ma bardzo ciekawą funkcję:
+
+Observers + Automatic Observer Promotion.
+
+Replica placement version: 2 pozwala np.:
+
+{
+  "version": 2,
+  "replicas": [
+    {
+      "count": 2,
+      "constraints": {
+        "rack": "DC1"
+      }
+    },
+    {
+      "count": 2,
+      "constraints": {
+        "rack": "DC2"
+      }
+    }
+  ],
+  "observers": [
+    {
+      "count": 1,
+      "constraints": {
+        "rack": "DC1"
+      }
+    }
+  ],
+  "observerPromotionPolicy": "under-min-isr"
+}
+
+Masz wtedy:
+
+DC1                     DC2
+
+B101 sync               B201 sync
+B102 sync               B202 sync
+B103 observer
+
+Observer normalnie replikuje dane, ale nie należy do ISR. Confluent może automatycznie promować observera do ISR, gdy liczba ISR spadnie poniżej min.insync.replicas.
+
+To jest bardzo przydatne przy awarii pojedynczego brokera:
+
+BEFORE
+
+ISR = 4
+B101 B102 B201 B202
+
+B102 FAIL
+
+ISR = 3
+
+Observer:
+
+B103
+
+może być promowany:
+
+ISR =
+B101
+B103
+B201
+B202
+
+i odzyskujesz redundancję automatycznie.
+
+Ale observer nie rozwiązuje utraty całego DC.
+
+Jeżeli observer jest w:
+
+DC1
+
+i tracisz DC1:
+
+B101 X
+B102 X
+B103 observer X
+
+zostają:
+
+B201
+B202
+
+Observer nie stworzy trzeciego failure domain.
+
+8. Automatic Observer Promotion — bardzo ważne EE 8.3
+
+Jeżeli używasz observers, ustaw:
+
+"version": 2,
+"observerPromotionPolicy": "under-min-isr"
+
+lub zależnie od strategii:
+
+"observerPromotionPolicy": "under-replicated"
+
+Confluent 8.3 obsługuje automatyczne dołączanie observera do ISR podczas degradacji.
+
+Dla HA bardziej podoba mi się:
+
+under-replicated
+
+ponieważ reaguje wcześniej:
+
+ISR 4 -> 3
+       |
+       +--> promote caught-up observer
+
+zamiast czekać:
+
+ISR < minISR
+
+Ale tę politykę trzeba dokładnie przetestować z Twoją topologią i oczekiwaniami latency.
+
+9. Internal topics — absolutnie nie wolno ich pominąć
+
+To jest jeden z najczęściej pomijanych elementów DR.
+
+Nie wystarczy zabezpieczyć:
+
+orders
+payments
+transactions
+events
+
+Musisz tak samo zabezpieczyć:
+
+__consumer_offsets
+__transaction_state
+
+Confluent ma do tego specjalne ustawienia:
+
+confluent.offsets.topic.placement.constraints=...
+
+oraz:
+
+confluent.transaction.state.log.placement.constraints=...
+
+i ogólny:
+
+confluent.log.placement.constraints=...
+
+Confluent dokumentuje osobne placement constraints właśnie dla business topics, __consumer_offsets i transaction state log.
+
+Przykładowo:
+
+confluent.log.placement.constraints={"version":2,"replicas":[{"count":2,"constraints":{"rack":"DC1"}},{"count":2,"constraints":{"rack":"DC2"}}]}
+
+podobnie:
+
+confluent.offsets.topic.placement.constraints=...
+
+i:
+
+confluent.transaction.state.log.placement.constraints=...
+
+To dla Twojego DR jest P0 — obowiązkowe.
+
+10. Nie używałbym unclean leader election do automatycznego DR
+
+Dla strategii:
+
+RPO=0
+
+unclean leader election powinno być traktowane jako awaryjna procedura odzyskiwania, a nie mechanizm HA.
+
+Confluent ostrzega, że wybranie repliki/observera spoza ISR może spowodować truncation logu przed najwyższym wcześniej potwierdzonym offsetem, czyli utratę ACKowanych danych.
+
+Czyli:
+
+RPO=0
+
+             YES
+              |
+acks=all -----+
+minISR -------+
+ISR ----------+
+sync replicas-+
+              |
+unclean election
+              |
+             NO
+11. Self-Balancing Cluster
+
+W EE 8.3 rozważyłbym również:
+
+confluent.balancer.enable=true
+
+na brokerach/controllerach wymaganych przez konfigurację SBC.
+
+Self-Balancing rozumie rack placement i może przenosić repliki, aby ponownie spełnić constraints po zmianach w klastrze.
+
+Ale:
+
+Self-Balancing != DR mechanism
+
+To bardziej:
+
+broker restored
+      ↓
+rebalance
+      ↓
+restore 2+2 placement
+      ↓
+restore normal redundancy
+
+niż mechanizm pierwszych sekund failoveru.
+
+12. Moja konfiguracja dla Twoich 5 brokerów
+
+Dałbym:
+
+                    NORMAL STATE
+
+            DC1                     DC2
+       ┌───────────────┐       ┌───────────────┐
+       │ B101          │       │ B201          │
+       │ sync replica  │=======│ sync replica  │
+       │               │       │               │
+       │ B102          │       │ B202          │
+       │ sync replica  │=======│ sync replica  │
+       │               │       │               │
+       │ B103          │       │               │
+       │ spare/observer│       │               │
+       └───────────────┘       └───────────────┘
+
+                RF = 4
+                placement = 2+2
+                minISR = 3
+                acks = all
+                idempotence = true
+Priorytety
+Funkcja	Dla RPO=0	Dla RTO	Ocena
+broker.rack	★★★★★	★★★★	obowiązkowe
+Replica Placement 2+2	★★★★★	★★★★★	obowiązkowe
+acks=all	★★★★★	★★★	obowiązkowe
+minISR=3	★★★★★	★★	obowiązkowe dla twardego RPO=0
+idempotent producer	★★★★★	★★★★	obowiązkowe
+offsets placement	★★★★★	★★★★★	obowiązkowe
+transaction-state placement	★★★★★	★★★★★	obowiązkowe
+Automatic Observer Promotion	★★★	★★★★★	bardzo wartościowe
+Self-Balancing	★★	★★★	wartościowe
+follower fetching	★	★★★	optymalizacja
+unclean leader election	❌	★★★	tylko awaryjnie
+13. Najważniejsza rzecz dla naszego projektu
+
+Dla Twojego wymogu:
+
+RPO = 0
+RTO = 0
+
+rozbiłbym wymaganie na dwie klasy awarii.
+
+Awaria pojedynczego brokera
+
+Tutaj jesteśmy bardzo blisko:
+
+RPO = 0
+RTO ≈ 0
+
+przy:
+
+RF=4
+2+2
+acks=all
+minISR=3
+Replica Placement
+Automatic Observer Promotion
+
+Leader election trwa krótko, producer retry ukrywa część przerwy.
+
+Awaria całego DC
+
+Przy dwóch DC i RF 2+2:
+
+RPO = 0
+RTO = 0
+
+nie może być jednocześnie twardą gwarancją.
+
+Jeżeli chcemy:
+
+RPO=0 > wszystko
+
+wybieramy:
+
+RF=4
+2+2
+minISR=3
+acks=all
+
+i akceptujemy:
+
+DC failure
+→ writes stop
+→ DR action
+→ restore minISR/redundancy
+→ writes resume
+
+To jest wariant, który wybrałbym dla systemu finansowego.
+
+Jeszcze jedna bardzo istotna uwaga: wszystko powyżej dotyczy broker/data plane. Jeżeli po utracie DC tracisz KRaft controller majority, nawet idealne 2+2 brokerów nie da Ci end-to-end RTO≈0, ponieważ control plane przestaje podejmować decyzje. Confluent sam rekomenduje 3+ failure domains dla MRC; dwa DC wymagają preferowanego DC albo interwencji przy utracie większości controllerów.
+
+Jeżeli chcesz, następny krok możemy zrobić bardzo praktycznie: narysuję dokładną topologię B101/B102/B103 + B201/B202 i przygotuję gotowe server.properties + replica-placement.json dla Confluent EE 8.3.0, osobno dla business topics, __consumer_offsets i __transaction_state.
+
+Przy CFK instalacja MRC jest robiona region-by-region. Każdy region ma własną instancję CFK i własne CR-y, ale wszystkie regionalne zasoby tworzą jeden logiczny klaster Kafka. Confluent wprost wymaga dla MRC wielu klastrów Kubernetes i osobnego CFK w każdym regionie.
+
+Dla Twojego przypadku widziałbym to tak:
+
+                  Logical Kafka Cluster
+        ─────────────────────────────────────
+
+        DC1 / K8s cluster             DC2 / K8s cluster
+        -----------------             -----------------
+        CFK Operator                  CFK Operator
+
+        Kafka CR                      Kafka CR
+        replicas: 3                   replicas: 2
+
+        B101                          B201
+        B102                          B202
+        B103
+
+        broker-id-offset: 100         broker-id-offset: 200
+        rack: DC1                     rack: DC2
+
+             \                         /
+              \------ WAN / DNS ------/
+
+CFK wymaga unikalnych broker IDs między regionami. Dokumentacja rekomenduje właśnie użycie różnych platform.confluent.io/broker-id-offset, np. 100, 200, 300, aby zostawić przestrzeń na późniejsze skalowanie. Tego offsetu nie powinno się później zmieniać.
+
+1. Instalujesz CFK w każdym Kubernetes cluster
+
+Schematycznie:
+
+helm repo add confluentinc https://packages.confluent.io/helm
+helm repo update
+
+DC1:
+
+kubectl config use-context dc1
+helm upgrade --install confluent-operator \
+  confluentinc/confluent-for-kubernetes \
+  --namespace confluent \
+  --create-namespace
+
+DC2:
+
+kubectl config use-context dc2
+helm upgrade --install confluent-operator \
+  confluentinc/confluent-for-kubernetes \
+  --namespace confluent \
+  --create-namespace
+
+CFK jest instalowany przez Helm i może działać namespace-scoped albo cluster-wide.
+
+2. Kafka CR dla DC1
+
+Przykładowa idea CR:
+
+apiVersion: platform.confluent.io/v1beta1
+kind: Kafka
+metadata:
+  name: kafka
+  namespace: kafka-apps
+  annotations:
+    platform.confluent.io/broker-id-offset: "100"
+
+spec:
+  replicas: 3
+
+  image:
+    application: confluentinc/cp-server:8.3.0
+
+  rackAssignment:
+    nodeLabels:
+      - topology.kubernetes.io/zone
+
+  oneReplicaPerNode: true
+
+  dependencies:
+    kRaftController:
+      clusterRef:
+        name: kraftcontroller
+        namespace: kafka-apps
+
+DC2:
+
+apiVersion: platform.confluent.io/v1beta1
+kind: Kafka
+metadata:
+  name: kafka
+  namespace: kafka-apps
+  annotations:
+    platform.confluent.io/broker-id-offset: "200"
+
+spec:
+  replicas: 2
+
+  image:
+    application: confluentinc/cp-server:8.3.0
+
+  rackAssignment:
+    nodeLabels:
+      - topology.kubernetes.io/zone
+
+  oneReplicaPerNode: true
+
+  dependencies:
+    kRaftController:
+      clusterRef:
+        name: kraftcontroller
+        namespace: kafka-apps
+
+Efekt broker ID może być przykładowo:
+
+DC1:
+100
+101
+102
+
+DC2:
+200
+201
+
+CFK ustawia broker.rack na podstawie zdefiniowanych labeli Kubernetes. Rack awareness w CFK jest konfigurowane przez rackAssignment.nodeLabels.
+
+W Twoim on-prem środowisku zamiast:
+
+topology.kubernetes.io/zone
+
+możesz mieć własny label:
+
+failure-domain=DC1
+failure-domain=DC2
+
+i wtedy:
+
+rackAssignment:
+  nodeLabels:
+    - failure-domain
+3. Ale ważniejsze: CFK rack assignment ≠ MRC placement
+
+To są dwie różne warstwy.
+
+CFK może spowodować:
+
+B101 -> broker.rack=DC1
+B102 -> broker.rack=DC1
+B103 -> broker.rack=DC1
+
+B201 -> broker.rack=DC2
+B202 -> broker.rack=DC2
+
+ale to jeszcze nie gwarantuje:
+
+2 replicas DC1
++
+2 replicas DC2
+
+Dlatego potrzebujesz Enterprise Replica Placement Constraints.
+
+Confluent bardzo wyraźnie ostrzega, że w MRC placement constraints są wymagane przed uznaniem konfiguracji za HA/DR; bez nich Kafka nie gwarantuje poprawnej dystrybucji replik między regionami.
+
+Dla naszego modelu:
+
+{
+  "version": 2,
+  "replicas": [
+    {
+      "count": 2,
+      "constraints": {
+        "rack": "DC1"
+      }
+    },
+    {
+      "count": 2,
+      "constraints": {
+        "rack": "DC2"
+      }
+    }
+  ]
+}
+
+To jest faktyczna polityka:
+
+RF = 4
+
+       DC1                  DC2
+   ┌─────────┐          ┌─────────┐
+   │ replica │          │ replica │
+   │ replica │          │ replica │
+   └─────────┘          └─────────┘
+
+         exactly 2 + 2
+4. Default placement możesz wstrzyknąć przez Kafka CR
+
+W CFK dodatkowe properties Kafka trafiają do server.properties.
+
+Logicznie wyglądałoby to mniej więcej tak:
+
+spec:
+  configOverrides:
+    server:
+      - 'confluent.log.placement.constraints={"version":2,"replicas":[{"count":2,"constraints":{"rack":"DC1"}},{"count":2,"constraints":{"rack":"DC2"}}]}'
+
+I osobno szczególnie ważne:
+
+      - 'confluent.offsets.topic.placement.constraints={"version":2,"replicas":[{"count":2,"constraints":{"rack":"DC1"}},{"count":2,"constraints":{"rack":"DC2"}}]}'
+
+      - 'confluent.transaction.state.log.placement.constraints={"version":2,"replicas":[{"count":2,"constraints":{"rack":"DC1"}},{"count":2,"constraints":{"rack":"DC2"}}]}'
+
+Czyli:
+
+business topics
+        ↓
+confluent.log.placement.constraints
+
+__consumer_offsets
+        ↓
+confluent.offsets.topic.placement.constraints
+
+__transaction_state
+        ↓
+confluent.transaction.state.log.placement.constraints
+
+Confluent dokumentuje wszystkie trzy jako osobne mechanizmy placement.
+
+To jest bardzo ważne w Twoim projekcie.
+
+Nie wystarczy:
+
+orders        -> 2+2 OK
+payments      -> 2+2 OK
+
+jeśli:
+
+__consumer_offsets   -> przypadkowy placement
+__transaction_state  -> przypadkowy placement
+
+bo wtedy aplikacja może mieć wszystkie business records, a mimo to DR consumerów albo transakcji będzie problematyczny.
+
+5. Jeżeli używamy Observer
+
+Tutaj robi się ciekawiej dla B103.
+
+Zamiast pozostawiać:
+
+B103 = praktycznie dodatkowy zwykły broker
+
+możemy zaprojektować topic:
+
+DC1                       DC2
+
+B101 replica              B201 replica
+B102 replica              B202 replica
+
+B103 observer
+
+Placement:
+
+{
+  "version": 2,
+
+  "replicas": [
+    {
+      "count": 2,
+      "constraints": {
+        "rack": "DC1"
+      }
+    },
+    {
+      "count": 2,
+      "constraints": {
+        "rack": "DC2"
+      }
+    }
+  ],
+
+  "observers": [
+    {
+      "count": 1,
+      "constraints": {
+        "rack": "DC1"
+      }
+    }
+  ],
+
+  "observerPromotionPolicy": "under-min-isr"
+}
+
+Czyli:
+
+                 Partition P0
+
+DC1                                     DC2
+────────────────                        ────────────────
+
+B101  replica ─────────────┐
+B102  replica ─────────────┼──── ISR ─── B201 replica
+                           │             B202 replica
+B103  observer ────────────┘
+      caught-up
+      normally outside ISR
+
+Confluent 8.3 pozwala definiować replicas i observers nawet w tym samym racku, a automatic observer promotion może reagować na degradację ISR.
+
+6. KRaft z CFK
+
+I tutaj musimy oddzielić broker plane od controller plane.
+
+Przykładowo:
+
+            KRaft metadata quorum
+
+DC1                                DC2
+
+C101 voter                         C201 voter
+C102 voter                         C202 voter
+C103 voter
+
+          5 controllers
+          majority = 3
+
+CFK ma osobny CR:
+
+apiVersion: platform.confluent.io/v1beta1
+kind: KRaftController
+metadata:
+  name: kraftcontroller
+spec:
+  replicas: ...
+
+W MRC wszystkie regionalne KRaft controller CR muszą używać tego samego Kafka cluster ID. CFK domyślnie generuje odrębne ID dla każdego regionu, więc w MRC trzeba je jawnie ujednolicić.
+
+Przykład koncepcji:
+
+spec:
+  clusterID: 267deff4-d4a4-429f-927
+
+ten sam:
+
+DC1 KRaft CR
+       │
+       ├── clusterID = X
+       │
+DC2 KRaft CR
+       │
+       └── clusterID = X
+7. Controller quorum CFK musi znać wszystkie regiony
+
+Confluent pokazuje dla MRC konstrukcję w rodzaju:
+
+controllerQuorumVoters:
+
+  - nodeId: 101
+    brokerEndpoint: c101.dc1.example.com:9074
+
+  - nodeId: 102
+    brokerEndpoint: c102.dc1.example.com:9074
+
+  - nodeId: 103
+    brokerEndpoint: c103.dc1.example.com:9074
+
+  - nodeId: 201
+    brokerEndpoint: c201.dc2.example.com:9074
+
+  - nodeId: 202
+    brokerEndpoint: c202.dc2.example.com:9074
+
+To jest właśnie miejsce, gdzie CFK tworzy jeden logiczny KRaft quorum rozciągnięty między Kubernetes clusters.
+
+Przy dynamic quorum w 8.3 dochodzi jeszcze możliwość zarządzania membership KRaft bardziej dynamicznie. CFK ma obecnie dedykowaną procedurę dynamic KRaft quorum, a w CP 8.2+ może również używać auto-join controllerów po ich synchronizacji.
+
+8. Networking jest krytyczny
+
+CFK nie „magicznie” połączy Kubernetes clusters.
+
+Musisz zapewnić:
+
+DC1 pod
+   |
+   | resolve DNS
+   |
+   +------------------> B201.kafka.dc2
+   |
+   +------------------> C201.kraft.dc2
+
+i odwrotnie.
+
+Confluent wspiera w MRC:
+
+internal listener
+
+jeżeli routing/DNS pomiędzy Kubernetes clusters pozwala bezpośrednio osiągać pod endpoints,
+
+albo:
+
+external listener
+
+przez:
+
+LoadBalancer
+NodePort
+Route
+host-based access
+port-based access
+Ingress
+
+Dokumentacja CFK wprost wskazuje, że jeśli komponenty w różnych regionach nie mają bezpośredniej komunikacji wewnętrznej, należy skonfigurować dostęp zewnętrzny/advertised listeners.
+
+W Twojej architekturze wybrałbym raczej:
+
+private WAN
++
+private DNS
++
+internal/private listeners
+
+niż publiczne LB.
+
+9. Najważniejsza rzecz: co faktycznie robi Operator
+
+Dobrze jest myśleć o nim tak:
+
+                     YOU
+
+Kafka CR
+KRaftController CR
+ConfigMap
+Secrets
+Certificates
+placement policy
+        |
+        v
++----------------------+
+|     CFK Operator     |
++----------------------+
+        |
+        +--> StatefulSet / Pods
+        +--> PVC
+        +--> Services
+        +--> broker IDs
+        +--> listeners
+        +--> certificates
+        +--> configuration
+        +--> rolling restart
+        +--> scale
+        +--> health reconciliation
+
+Ale:
+
+CFK
+!=
+Kafka Controller
+
+Operator nie wybiera partition leaderów i nie zarządza ISR bezpośrednio.
+
+To nadal robi Kafka:
+
+KRaft Controller
+     |
+     +-- metadata
+     +-- partition leadership
+     +-- ISR/ELR
+     +-- broker registration
+
+CFK zarządza:
+
+desired Kubernetes state
+
+Kafka zarządza:
+
+Kafka distributed state
+
+To rozróżnienie jest szczególnie istotne podczas DR.
+
+10. Tak wyglądałby cały Twój deployment
+                         CONFLUENT MRC
+                    Kafka Cluster ID = X
+
+                ┌─────────────────────────────┐
+                │                             │
+         Kubernetes DC1               Kubernetes DC2
+         ==============               ==============
+
+         CFK Operator                 CFK Operator
+              │                            │
+              │                            │
+       Kafka CR                      Kafka CR
+       replicas=3                    replicas=2
+       broker offset=100             broker offset=200
+              │                            │
+       ┌──────┼──────┐               ┌─────┴─────┐
+       │      │      │               │           │
+      B101   B102   B103            B201        B202
+      rack   rack   rack            rack        rack
+      DC1    DC1    DC1             DC2         DC2
+
+       sync   sync   observer        sync         sync
+          \     \       |             /            /
+           \     \      |            /            /
+            +----+------+-----------+------------+
+                         |
+                  Partition replicas
+
+                  RF = 4
+                 ISR = 4
+                minISR = 3
+                 2 + 2
+             + optional observer
+
+A osobno:
+
+                    KRaft Controller Plane
+
+         DC1                                DC2
+
+        C101 ────────────────────────────── C201
+        C102 ────────────────────────────── C202
+        C103
+
+                   one metadata quorum
+                     cluster.id=X
+
+I właśnie dlatego w CFK nie robimy jednego wielkiego Kafka CR obejmującego dwa niezależne Kubernetes clusters. Masz regionalne CR-y zarządzane przez regionalne operatory CFK, ale broker IDs, cluster ID, networking, KRaft quorum i Kafka placement powodują, że na poziomie Confluent Platform powstaje jeden logiczny MRC.
+
+Jeżeli chcesz odwzorować dokładnie naszą topologię C101/C102/C103 + C201/C202 oraz B101/B102/B103 + B201/B202, następnym krokiem najlepiej rozpisać komplet 4 CR YAML: KRaftController-DC1, KRaftController-DC2, Kafka-DC1, Kafka-DC2, już w składni CFK 3.3 / Confluent Platform 8.3.0.
+
+Czy ma jakiś elemnt administarcyjny
+
+Tak. Przy instalacji Confluent EE 8.3.0 z CFK masz kilka warstw administracyjnych, ale najważniejsze są trzy.
+
+Po pierwsze CFK Operator – to warstwa administracyjna dla Kubernetes. Zarządza lifecycle komponentów Confluent: tworzy StatefulSety, Services, PVC, wykonuje rolling restart, scaling i reconciliation CR-ów. Nie jest jednak narzędziem do bieżącej administracji topicami czy partycjami.
+
+Po drugie Control Center – webowy interfejs administracyjno-monitoringowy dla Confluent Platform 8.x. Pozwala obserwować health klastra, topiki, messages, Schema Registry i inne komponenty. W CP 8.x używa się nowego Control Center, nie wersji Legacy.
+
+Po trzecie Admin REST API / KafkaRestClass. CFK może wykonywać operacje administracyjne przez REST, np. zarządzać KafkaTopic CR oraz ConfluentRolebinding. Do tego definiuje się KafkaRestClass, czyli wskazanie endpointu administracyjnego Kafka/Confluent.
+
+Architektonicznie wygląda to tak:
+
+                    Administrator
+                         |
+          +--------------+--------------+
+          |                             |
+          v                             v
+   Control Center                 kubectl / GitOps
+   Web UI                              |
+          |                            |
+          |                       KafkaTopic CR
+          |                       Kafka CR
+          |                       KRaftController CR
+          |                       RoleBinding CR
+          |                            |
+          |                            v
+          |                       CFK Operator
+          |                            |
+          +------------+---------------+
+                       |
+                       v
+                Confluent Platform
+                       |
+          +------------+-------------+
+          |                          |
+     Admin REST API              Kafka protocol
+          |                          |
+          v                          v
+      metadata /                 KRaft Controller
+      topics / RBAC              + Brokers
+
+Dla Twojego MRC szczególnie ważny jest Admin REST layer, ponieważ CFK może zarządzać topicami jako CR:
+
+apiVersion: platform.confluent.io/v1beta1
+kind: KafkaTopic
+metadata:
+  name: payments
+spec:
+  replicas: 4
+  partitionCount: 12
+  configs:
+    min.insync.replicas: "3"
+
+a KafkaRestClass mówi operatorowi, do którego logicznego Kafka cluster ma wysłać operację administracyjną. To jest szczególnie przydatne przy wielu Kafka clusters / regionach.
+
+Dla architekta zrobiłbym więc takie rozróżnienie:
+
+CFK Operator
+= infrastructure / lifecycle administration
+
+Control Center
+= operational administration + monitoring
+
+Admin REST API
+= programmable Kafka administration
+
+Kafka/KRaft Controller
+= runtime distributed control plane
+
+I jeszcze jedna rzecz: Control Center nie zastępuje CFK, a CFK nie zastępuje KRaft Controllera. Confluent dokumentuje je jako osobne komponenty: Control Center monitoruje i administruje platformą, podczas gdy CFK wdraża i operuje Confluent Platform na Kubernetes.
+
+Dla Twojego 2.5-DC MRC najbardziej sensowny stack administracyjny to:
+
+Git / Helm
+    |
+    v
+CFK Operator per Kubernetes cluster
+    |
+    +-- Kafka CR
+    +-- KRaftController CR
+    +-- KafkaTopic CR
+    +-- ConfluentRolebinding CR
+    |
+    v
+Admin REST API
+    |
+    v
+Kafka / KRaft
+
+             +
+             |
+             v
+
+        Control Center
+        central operations UI
+
+To daje zarówno deklaratywne zarządzanie przez Kubernetes/GitOps, jak i centralny interfejs operatorski. CFK 3.3 jest kompatybilny z Confluent Platform 8.3.x oraz Control Center 2.4–2.6.
+
+Last part in english
+
+For an architect, I would make the following distinction:
+
+CFK Operator
+= infrastructure / lifecycle administration
+
+Control Center
+= operational administration + monitoring
+
+Admin REST API
+= programmable Kafka administration
+
+Kafka/KRaft Controller
+= runtime distributed control plane
+
+One important point: Control Center does not replace CFK, and CFK does not replace the KRaft Controller. They operate at different layers of the architecture.
+
+For a 2.5-DC MRC design, the recommended administrative stack is:
+
+Git / Helm
+|
+v
+CFK Operator per Kubernetes cluster
+|
++-- Kafka CR
++-- KRaftController CR
++-- KafkaTopic CR
++-- ConfluentRolebinding CR
+|
+v
+Admin REST API
+|
+v
+Kafka / KRaft
+
+         +
+         |
+         v
+
+    Control Center
+    central operations UI
+
+This provides both declarative lifecycle management through Kubernetes/GitOps and a centralized operational interface for Kafka administrators.
+
+Give feedback
